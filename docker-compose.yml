@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-maestro}
+      POSTGRES_USER: ${POSTGRES_USER:-maestro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - maestro-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  maestro-api:
+    build: .
+    environment:
+      MAESTRO_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-maestro}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-maestro}
+      MAESTRO_AUTO_CREATE_SCHEMA: "false"
+      MAESTRO_ROBOTS_JSON: ${MAESTRO_ROBOTS_JSON:-[]}
+      MAESTRO_HEARTBEAT_TIMEOUT_SEC: ${MAESTRO_HEARTBEAT_TIMEOUT_SEC:-15}
+      MAESTRO_READ_TOKEN: ${MAESTRO_READ_TOKEN:-}
+      MAESTRO_CONTROL_TOKEN: ${MAESTRO_CONTROL_TOKEN:-}
+      MAESTRO_ADMIN_TOKEN: ${MAESTRO_ADMIN_TOKEN:-}
+      MAESTRO_ALLOWED_SKILLS_JSON: ${MAESTRO_ALLOWED_SKILLS_JSON:-}
+      MAESTRO_CONTROL_RATE_LIMIT_PER_MINUTE: ${MAESTRO_CONTROL_RATE_LIMIT_PER_MINUTE:-120}
+      MAESTRO_LOG_LEVEL: ${MAESTRO_LOG_LEVEL:-INFO}
+      MAESTRO_EVENT_RETENTION_DAYS: ${MAESTRO_EVENT_RETENTION_DAYS:-30}
+      MAESTRO_OLLAMA_MODEL: ${MAESTRO_OLLAMA_MODEL:-}
+      MAESTRO_OLLAMA_BASE_URL: ${MAESTRO_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      MAESTRO_LANGSMITH_TRACING: ${MAESTRO_LANGSMITH_TRACING:-false}
+      MAESTRO_LANGSMITH_CAPTURE_CONTENT: ${MAESTRO_LANGSMITH_CAPTURE_CONTENT:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-robo-claw-maestro}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      LANGSMITH_TRACING_SAMPLING_RATE: ${LANGSMITH_TRACING_SAMPLING_RATE:-1.0}
+      LANGSMITH_HIDE_INPUTS: ${LANGSMITH_HIDE_INPUTS:-true}
+      LANGSMITH_HIDE_OUTPUTS: ${LANGSMITH_HIDE_OUTPUTS:-true}
+      LANGSMITH_WORKSPACE_ID: ${LANGSMITH_WORKSPACE_ID:-}
+      MAESTRO_FLEET_CONTROL_ENABLED: ${MAESTRO_FLEET_CONTROL_ENABLED:-false}
+      MAESTRO_FLEET_CONTROL_HOST: 0.0.0.0
+      MAESTRO_FLEET_CONTROL_PORT: ${MAESTRO_FLEET_CONTROL_PORT:-50053}
+      MAESTRO_FLEET_TLS_CERTIFICATE: ${MAESTRO_FLEET_TLS_CERTIFICATE:-}
+      MAESTRO_FLEET_TLS_PRIVATE_KEY: ${MAESTRO_FLEET_TLS_PRIVATE_KEY:-}
+      MAESTRO_FLEET_TLS_CLIENT_CA: ${MAESTRO_FLEET_TLS_CLIENT_CA:-}
+    ports:
+      - "${MAESTRO_PORT:-8000}:8000"
+      - "${MAESTRO_FLEET_CONTROL_PORT:-50053}:${MAESTRO_FLEET_CONTROL_PORT:-50053}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: ./web
+    ports:
+      - "${MAESTRO_WEB_PORT:-3000}:80"
+    depends_on:
+      maestro-api:
+        condition: service_healthy
+
+volumes:
+  maestro-postgres:
