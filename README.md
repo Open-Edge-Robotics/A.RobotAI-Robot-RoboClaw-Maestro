@@ -11,7 +11,7 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 | Phase 2 | MVP 완료 | RosGrpc unary/stream adapter, 정적 endpoint, 자동 monitor, exponential backoff, fake gRPC 3대, disconnect/reconnect/session test | 기존 RosGrpc 자체의 구조화 capability와 cancel contract는 없음 |
 | Phase 3 | 대부분 완료 | Registry, snapshot 저장, telemetry event/retention, REST API, WebSocket event, read/control/admin token | 장기 telemetry 집계 정책과 외부 IdP 기반 RBAC는 없음 |
 | Phase 4 | 핵심 구현 | Mission lifecycle, dependency/병렬 dispatch, retry/reassignment, DB resource lease, startup reconciliation, safety policy, deadline | RosGrpc ACK 분리, 실행 중 원격 cancel/pause, distributed worker 자동 scheduling loop 보강 필요 |
-| Phase 5 | 대부분 완료 | Plan parser, tool facade, Ollama, goal API, bounded replanning, planning metric, LangSmith plan trace, injection/timeout 검증 | OpenAI adapter, provider 실제 token usage, 자동 replanning trigger는 없음 |
+| Phase 5 | 대부분 완료 | Plan parser, tool facade, Ollama/OpenAI/Azure OpenAI/Anthropic, goal API, bounded replanning, planning metric, LangSmith plan trace | provider 실제 token usage와 자동 replanning trigger는 없음 |
 | Phase 6 | 부분 구현 | React fleet/mission/event Console, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
 | Phase 7 | Connector 구현·실기기 검증 대기 | FleetControl proto/server, 실제 `robo_claw_grpc` outbound connector, registration/telemetry, SQLite dedup/result replay, TLS/mTLS | 실제 Robot 읽기 전용 인수, AgentStatus 통합, 실제 cancel/pause/resume handler 필요 |
 | Phase 8 | 부분 구현 | health/RBAC, Prometheus metric, optional LangSmith trace, JSON log, rate limit, event retention, backup/장애 runbook, reconnect fault test | OpenTelemetry exporter, 인증서 교체 자동화, 부하 테스트, DB restore 자동 검증 필요 |
@@ -24,7 +24,7 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 | --- | --- | --- |
 | fake/simulated robot 3대 동시 관리 | 충족 | in-memory 및 실제 loopback gRPC 3대 통합 테스트 |
 | Robot 연결·상태 실시간 표시 | 충족 | RosGrpc stream, FleetControl telemetry, WebSocket, Console |
-| 자연어 목표를 검증된 Mission/Task로 변환 | 조건부 충족 | Ollama 설정 시 동작하며 fake provider 테스트 완료 |
+| 자연어 목표를 검증된 Mission/Task로 변환 | 조건부 충족 | Ollama/OpenAI/Azure OpenAI/Anthropic 설정 시 동작하며 fake provider 테스트 완료 |
 | capability 기반 Task 배정 | 충족 | capability·health·battery·map·pose safety policy 적용 |
 | dependency 순차 및 독립 Task 병렬 실행 | 충족 | component/E2E 테스트 포함 |
 | 성공·실패·timeout·unknown·cancel 추적 | 부분 충족 | 로컬 상태는 지원하지만 RosGrpc 원격 cancel contract가 없음 |
@@ -62,6 +62,20 @@ export MAESTRO_AUTO_CREATE_SCHEMA=false
 .venv/bin/uvicorn robo_claw_maestro.main:app --host 127.0.0.1 --port 8000
 ```
 
+## LLM Provider 설정
+
+자연어 goal planning은 Ollama, OpenAI, Azure OpenAI와 Anthropic을 지원합니다.
+
+```bash
+export MAESTRO_LLM_PROVIDER=azure_openai
+export MAESTRO_LLM_MODEL=<azure-deployment-name>
+export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+export AZURE_OPENAI_API_KEY=<api-key>
+export AZURE_OPENAI_API_VERSION=2024-10-21
+```
+
+`MAESTRO_LLM_PROVIDER`를 비워두면 LLM planning만 비활성화되고 Robot 관리, 직접 Mission과 emergency stop은 계속 동작합니다. Provider별 전체 설정은 [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)을 참고합니다.
+
 ## 검증 지점 1: 정적 검사와 전체 자동 테스트
 
 언제든 다음 명령으로 현재 구현을 검증할 수 있습니다.
@@ -72,7 +86,7 @@ export MAESTRO_AUTO_CREATE_SCHEMA=false
 .venv/bin/pytest -q
 ```
 
-테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `92 passed`, frontend typecheck/build 성공입니다.
+테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `103 passed`, frontend typecheck/build 성공입니다.
 
 Migration도 독립적으로 확인할 수 있습니다.
 
@@ -247,7 +261,7 @@ npm run dev
 - read/control token 저장
 - 확인 대화상자가 있는 fleet emergency stop
 
-Ollama를 설정하지 않았다면 자연어 goal 입력은 `503 LLM planner is not configured`를 반환합니다. 나머지 fleet 화면과 emergency stop은 LLM 없이 동작합니다.
+LLM provider를 설정하지 않았다면 자연어 goal 입력은 `503 LLM planner is not configured`를 반환합니다. 나머지 fleet 화면과 emergency stop은 LLM 없이 동작합니다.
 
 ## 검증 지점 5: FleetControl outbound robot
 
@@ -299,7 +313,8 @@ export LANGSMITH_TRACING_SAMPLING_RATE=1.0
 # redaction된 구조화 입력/출력을 LangSmith 화면에서 표시합니다.
 export LANGSMITH_HIDE_INPUTS=false
 export LANGSMITH_HIDE_OUTPUTS=false
-export MAESTRO_OLLAMA_MODEL=<installed-model>
+export MAESTRO_LLM_PROVIDER=ollama
+export MAESTRO_LLM_MODEL=<installed-model>
 .venv/bin/uvicorn robo_claw_maestro.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -321,7 +336,7 @@ maestro_api_request                              [chain, HTTP root]
 ├─ maestro_goal_request                          [chain]
 │  └─ create_mission_plan                        [chain]
 │     ├─ llm_provider.complete                   [llm]
-│     │  └─ OllamaProvider.complete              [llm, Ollama 사용 시]
+│     │  └─ Ollama/OpenAI/AzureOpenAI/AnthropicProvider.complete
 │     └─ validate_mission_plan                   [chain]
 │        ├─ decode_plan_json                     [chain]
 │        └─ validate_plan_task                   [chain, Task마다 반복]
@@ -359,11 +374,27 @@ export MAESTRO_LANGSMITH_TRACING=false
 .venv/bin/pytest tests/unit/test_tracing.py -q
 ```
 
-## PostgreSQL과 Docker Compose
+## 신규 호스트와 Docker Compose
+
+신규 호스트에서는 bootstrap script가 credential 생성, Compose 검증, build, 기동과 readiness 확인을 수행합니다.
+
+```bash
+git clone <robo-claw-maestro-repository-url>
+cd robo-claw-maestro
+./scripts/bootstrap_maestro_host.sh --no-start
+editor .env
+./scripts/bootstrap_maestro_host.sh
+python3 scripts/verify_maestro_host.py --env-file .env
+```
+
+기존 `.env`를 덮어쓰지 않으며 read/control/admin token과 PostgreSQL password를 자동 생성합니다. 전체 절차와 옵션은 [다중 로봇 연동 테스트](docs/ROBOT_TEST_MANUAL.md#2-신규-호스트-빠른-설치와-실행)를 참고합니다.
+
+수동 실행이 필요한 경우:
 
 ```bash
 cp .env.example .env
-docker compose up --build
+# .env의 change-me와 token을 반드시 변경합니다.
+docker compose --env-file .env up --build
 ```
 
 Console은 `http://127.0.0.1:3000`, API는 `http://127.0.0.1:8000`에서 확인합니다.
@@ -412,5 +443,6 @@ WS   /api/v1/events/stream
 - [다중 로봇 연동 테스트](docs/ROBOT_TEST_MANUAL.md)
 - [FleetControl 프로토콜](docs/PROTOCOL.md)
 - [운영·metric·backup·장애 대응](docs/OPERATIONS.md)
+- [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)
 - [Maestro LangSmith 연동](docs/LANGSMITH_INTEGRATION.md)
 - [Architecture Decision Records](docs/adr/)

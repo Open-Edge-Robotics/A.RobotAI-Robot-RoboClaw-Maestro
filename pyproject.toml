@@ -20,6 +20,9 @@ robot = [
 tracing = [
     "langsmith>=0.1.100",
 ]
+llm = [
+    "httpx>=0.27.0",
+]
 database = [
     "sqlmodel>=0.0.21",
     "asyncpg>=0.29.0",

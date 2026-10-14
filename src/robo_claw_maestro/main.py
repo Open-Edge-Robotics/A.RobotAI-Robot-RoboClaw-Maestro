@@ -20,7 +20,7 @@ from robo_claw_maestro.adapters.grpc.fleet_control_server import (
     FleetPreferredGateway,
 )
 from robo_claw_maestro.adapters.grpc.multi_robot import MultiRobotGateway
-from robo_claw_maestro.adapters.llm.ollama import OllamaProvider
+from robo_claw_maestro.adapters.llm.factory import build_llm_provider
 from robo_claw_maestro.agent.maestro_agent import MaestroAgent
 from robo_claw_maestro.agent.planner import MissionPlanParser
 from robo_claw_maestro.api.app import create_app
@@ -114,15 +114,17 @@ def build_app():
         await orchestrator.reconcile_all(reconciliation)
 
     maestro_agent = None
-    if settings.ollama_model:
+    llm_provider = build_llm_provider(settings)
+    if llm_provider is not None:
         capabilities = {
             str(capability)
             for robot in settings.robots
             for capability in robot.get("capabilities", [])
         }
         maestro_agent = MaestroAgent(
-            OllamaProvider(settings.ollama_model, base_url=settings.ollama_base_url),
+            llm_provider,
             MissionPlanParser(capabilities, known_robot_ids=set(endpoints)),
+            timeout_sec=settings.llm_timeout_sec,
         )
     fleet_server = None
     if fleet_hub is not None:

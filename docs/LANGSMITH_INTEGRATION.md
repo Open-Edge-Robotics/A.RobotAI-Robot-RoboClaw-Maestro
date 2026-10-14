@@ -105,7 +105,7 @@ maestro_api_request                              [chain, HTTP root]
 ├─ maestro_goal_request                          [chain]
 │  └─ create_mission_plan                        [chain]
 │     ├─ llm_provider.complete                   [llm]
-│     │  └─ OllamaProvider.complete              [llm, Ollama 사용 시]
+│     │  └─ Ollama/OpenAI/AzureOpenAI/AnthropicProvider.complete
 │     └─ validate_mission_plan                   [chain]
 │        ├─ decode_plan_json                     [chain]
 │        └─ validate_plan_task                   [chain, Task마다 반복]
@@ -183,7 +183,7 @@ src/robo_claw_maestro/adapters/llm/ollama.py
 - latency
 - 실제 또는 추정 token usage
 
-Ollama는 응답의 token count 필드가 제공되면 실제 값을 사용하고, 제공되지 않을 때만 현재 추정치를 사용합니다.
+Provider 실제 token usage를 공통 metrics로 전달하는 기능은 후속 작업입니다. 현재 planning metrics는 문자열 길이 기반 추정치를 사용하며 LangSmith provider run에서 요청 지연과 성공/실패를 확인할 수 있습니다.
 
 ### MissionPlanParser
 

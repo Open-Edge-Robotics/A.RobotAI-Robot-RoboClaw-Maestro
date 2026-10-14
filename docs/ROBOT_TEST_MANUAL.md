@@ -10,7 +10,151 @@
 - 첫 테스트에서는 `get_status`, `analyze_scene` 같은 읽기 전용 스킬만 허용합니다.
 - motion 작업은 로봇별 지도와 초기 위치가 정상임을 확인한 후 수행합니다.
 
-## 2. 설치와 기본 검증
+## 2. 신규 호스트 빠른 설치와 실행
+
+### 사전 조건
+
+신규 호스트에는 다음 도구가 필요합니다.
+
+```text
+git
+Docker Engine
+Docker Compose v2 (`docker compose`)
+python3
+curl
+```
+
+Docker daemon이 실행 중이고 현재 사용자가 Docker를 실행할 수 있어야 합니다.
+
+### 저장소 준비
+
+```bash
+git clone <robo-claw-maestro-repository-url>
+cd robo-claw-maestro
+```
+
+### 1단계: 안전한 환경 파일 생성
+
+```bash
+./scripts/bootstrap_maestro_host.sh --no-start
+```
+
+스크립트는 `.env.example`을 바탕으로 `.env`를 만들고 다음 값을 자동 생성합니다.
+
+- PostgreSQL password
+- read token
+- control token
+- admin token
+- PostgreSQL connection URL
+
+생성한 `.env`는 권한 `600`으로 저장합니다. 기존 `.env`가 있으면 덮어쓰지 않습니다.
+
+기존 파일을 교체해야 할 때만 다음 옵션을 사용합니다.
+
+```bash
+./scripts/bootstrap_maestro_host.sh --no-start --force-env
+```
+
+### 2단계: 환경별 설정 수정
+
+```bash
+editor .env
+```
+
+최소 확인 항목:
+
+```dotenv
+MAESTRO_PORT=8000
+MAESTRO_FLEET_CONTROL_ENABLED=false
+MAESTRO_FLEET_CONTROL_PORT=50053
+MAESTRO_LANGSMITH_TRACING=false
+MAESTRO_LLM_PROVIDER=
+MAESTRO_LLM_MODEL=
+```
+
+LLM planning을 사용할 경우 [LLM Provider 설정](LLM_PROVIDERS.md)에 따라 provider와 credential을 설정합니다. LLM을 비활성화해도 Robot monitoring, 직접 Mission, emergency stop은 동작합니다.
+
+FleetControl outbound Robot을 받을 경우:
+
+```dotenv
+MAESTRO_FLEET_CONTROL_ENABLED=true
+MAESTRO_FLEET_CONTROL_HOST=0.0.0.0
+MAESTRO_FLEET_CONTROL_PORT=50053
+```
+
+### 3단계: Build 및 실행
+
+```bash
+./scripts/bootstrap_maestro_host.sh
+```
+
+스크립트가 수행하는 작업:
+
+1. Docker/Docker Compose/Python/curl 확인
+2. `.env` 생성 또는 기존 파일 사용
+3. `docker compose config` 검증
+4. API/Web image build
+5. PostgreSQL/API/Web container 실행
+6. `/ready`를 최대 120초 동안 확인
+7. 실패 시 API log 출력
+
+기존 image를 다시 build하지 않고 시작하려면:
+
+```bash
+./scripts/bootstrap_maestro_host.sh --no-build
+```
+
+### 4단계: 비파괴 자동 검증
+
+```bash
+python3 scripts/verify_maestro_host.py --env-file .env
+```
+
+검증 항목:
+
+- `/health`
+- DB health
+- `/ready`
+- Prometheus `/metrics`
+- read token을 사용한 Robot API
+- approval API
+- 필수 OpenAPI route
+- Docker service 실행 상태
+
+등록돼야 하는 Robot ID가 있다면 반복해서 지정합니다.
+
+```bash
+python3 scripts/verify_maestro_host.py \
+  --env-file .env \
+  --expect-robot former-01 \
+  --expect-robot stretch-01
+```
+
+WebSocket까지 확인하려면 프로젝트 가상환경을 준비합니다.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/python scripts/verify_maestro_host.py --env-file .env --websocket
+```
+
+검증 스크립트는 Task, Skill, emergency stop 같은 제어 요청을 보내지 않습니다.
+
+### 5단계: 상태 및 종료
+
+```bash
+docker compose --env-file .env ps
+docker compose --env-file .env logs -f maestro-api
+docker compose --env-file .env down
+```
+
+PostgreSQL volume까지 삭제하려면 데이터가 필요 없는지 확인한 후에만 사용합니다.
+
+```bash
+docker compose --env-file .env down -v
+```
+
+## 3. 개발 환경 설치와 기본 검증
 
 ```bash
 cd robo-claw-maestro
@@ -31,7 +175,7 @@ curl -fsS http://127.0.0.1:8000/ready
 docker compose down
 ```
 
-## 3. Fake robot 3대 테스트
+## 4. Fake robot 3대 테스트
 
 별도 ROS 2 또는 로봇 없이 실행할 수 있습니다.
 
@@ -74,7 +218,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/fleet/emergency-stop
 
 응답의 `requested`와 `stopped` 수가 각각 3이어야 합니다.
 
-## 4. 실제 Robo-Claw 2대 준비
+## 5. 실제 Robo-Claw 2대 준비
 
 각 로봇에서 서로 다른 robot ID와 RosGrpc endpoint를 사용합니다. 예시는 다음과 같습니다.
 
@@ -98,7 +242,7 @@ nc -vz 192.168.10.22 50051
 
 Maestro에는 현재 Robo-Claw `robo.proto`와 호환되는 generated client가 포함되어 있으므로 Robo-Claw ROS workspace를 Maestro 호스트에서 source할 필요는 없습니다. Robo-Claw의 proto가 변경되면 Maestro의 `proto/robo.proto`, generated client, contract test를 함께 갱신해야 합니다.
 
-## 5. 실제 로봇 endpoint 설정
+## 6. 실제 로봇 endpoint 설정
 
 ```bash
 export MAESTRO_DATABASE_URL='postgresql+psycopg://maestro:change-me@127.0.0.1:5432/maestro'
@@ -129,7 +273,7 @@ export MAESTRO_ROBOTS_JSON='[
 .venv/bin/uvicorn robo_claw_maestro.main:app --host 0.0.0.0 --port 8000
 ```
 
-## 6. 실제 로봇 상태와 읽기 전용 스킬 검증
+## 7. 실제 로봇 상태와 읽기 전용 스킬 검증
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/v1/robots/synchronize \
@@ -147,7 +291,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/robots/stretch-01/skills/get_status
 
 두 로봇의 `connection_state`가 `ONLINE`이고 robot ID가 endpoint 설정과 일치해야 합니다. ID가 다르면 Maestro는 해당 응답을 거부합니다.
 
-## 7. 장애와 비상 정지 검증
+## 8. 장애와 비상 정지 검증
 
 1. 로봇 한 대의 RosGrpc 프로세스를 중지합니다.
 2. `/api/v1/robots/synchronize`를 호출합니다.
@@ -161,7 +305,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/fleet/emergency-stop
 
 응답은 로봇별 성공과 실패를 분리합니다. 응답하지 않은 로봇이 있으면 전체 성공으로 판단하지 않습니다.
 
-## 8. 현재 제한 사항
+## 9. 현재 제한 사항
 
 - RosGrpc transport는 개발망 전용이며 mTLS는 FleetControl 단계에서 제공합니다.
 - 기존 `ExecuteTaskResponse`에는 command/task ID와 progress가 없어 Maestro가 로컬 mapping을 유지합니다.
