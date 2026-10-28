@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -15,20 +16,28 @@ class PlanValidationError(ValueError):
     pass
 
 
+NameSource = set[str] | Callable[[], set[str]]
+
+
+def _resolve(source: NameSource) -> set[str]:
+    return set(source()) if callable(source) else set(source)
+
+
 class MissionPlanParser:
     def __init__(
         self,
-        available_capabilities: set[str],
+        available_capabilities: NameSource,
         *,
-        known_robot_ids: set[str] | None = None,
+        known_robot_ids: NameSource | None = None,
         max_tasks: int = 20,
         max_attempts: int = 3,
         max_timeout_sec: float = 3600,
     ) -> None:
         if max_tasks < 1:
             raise ValueError("max_tasks must be positive")
+        # Callables are resolved per parse so robots registered at runtime are honored.
         self._capabilities = available_capabilities
-        self._robots = known_robot_ids or set()
+        self._robots = known_robot_ids if known_robot_ids is not None else set()
         self._max_tasks = max_tasks
         self._max_attempts = max_attempts
         self._max_timeout = max_timeout_sec
@@ -60,7 +69,9 @@ class MissionPlanParser:
             created_by=created_by,
             summary=str(data.get("summary", "")),
         )
-        tasks = [self._task(item, identity) for item in raw_tasks]
+        capabilities = _resolve(self._capabilities)
+        robots = _resolve(self._robots)
+        tasks = [self._task(item, identity, capabilities, robots) for item in raw_tasks]
         try:
             mission.add_tasks(tasks)
         except (InvalidMissionPlan, ValueError) as exc:
@@ -98,17 +109,17 @@ class MissionPlanParser:
         process_inputs=process_inputs,
         process_outputs=process_outputs,
     )
-    def _task(self, item: Any, mission_id: str) -> Task:
+    def _task(self, item: Any, mission_id: str, capabilities: set[str], robots: set[str]) -> Task:
         if not isinstance(item, dict):
             raise PlanValidationError("each task must be an object")
         task_id = str(item.get("task_id", "")).strip()
         instruction = str(item.get("instruction", "")).strip()
         required = {str(value) for value in item.get("required_capabilities", [])}
-        unknown = required - self._capabilities
+        unknown = required - capabilities
         if unknown:
             raise PlanValidationError(f"unknown capabilities: {sorted(unknown)}")
         preferred_robot = str(item.get("preferred_robot_id", "")).strip()
-        if preferred_robot and self._robots and preferred_robot not in self._robots:
+        if preferred_robot and robots and preferred_robot not in robots:
             raise PlanValidationError(f"unknown robot: {preferred_robot}")
         attempts = int(item.get("max_attempts", 1))
         timeout = float(item.get("timeout_sec", 300))

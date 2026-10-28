@@ -119,3 +119,34 @@ def test_agent_only_returns_validated_mission():
 
     assert mission.goal == "inspect the room"
     assert len(provider.requests) == 1
+
+
+def test_callable_sources_accept_capabilities_registered_after_startup():
+    capabilities: set[str] = set()
+    robots: set[str] = set()
+    live = MissionPlanParser(lambda: capabilities, known_robot_ids=lambda: robots)
+    with pytest.raises(PlanValidationError, match="unknown capabilities"):
+        live.parse(VALID_PLAN, goal="inspect", created_by="operator")
+
+    capabilities.add("inspect")
+    robots.add("cloid01")
+    preferred = VALID_PLAN.replace(
+        '"max_attempts": 2', '"max_attempts": 2, "preferred_robot_id": "cloid01"'
+    )
+    mission = live.parse(preferred, goal="inspect", created_by="operator")
+
+    assert mission.tasks["scan"].params["preferred_robot_id"] == "cloid01"
+    with pytest.raises(PlanValidationError, match="unknown robot"):
+        live.parse(preferred.replace("cloid01", "cloid99"), goal="inspect", created_by="operator")
+
+
+def test_fleet_catalog_is_included_in_planning_prompt():
+    provider = FakeLlmProvider([VALID_PLAN])
+    catalog = [{"robot_id": "cloid01", "capabilities": ["inspect"]}]
+    agent = MaestroAgent(provider, parser(), fleet_catalog=lambda: catalog)
+
+    asyncio.run(agent.create_plan("inspect the room", created_by="operator"))
+
+    _, user_prompt, _ = provider.requests[0]
+    assert '"robot_id": "cloid01"' in user_prompt
+    assert user_prompt.endswith("inspect the room")

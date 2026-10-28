@@ -116,15 +116,39 @@ def build_app():
     maestro_agent = None
     llm_provider = build_llm_provider(settings)
     if llm_provider is not None:
-        capabilities = {
+        static_capabilities = {
             str(capability)
             for robot in settings.robots
             for capability in robot.get("capabilities", [])
         }
+
+        # Robots report capabilities on FleetControl registration, so read the registry live.
+        def fleet_capabilities() -> set[str]:
+            return static_capabilities | {
+                name for robot in registry.list() for name in robot.capabilities
+            }
+
+        def fleet_robot_ids() -> set[str]:
+            return set(endpoints) | {robot.robot_id for robot in registry.list()}
+
+        def fleet_catalog() -> list[dict[str, object]]:
+            return [
+                {
+                    "robot_id": robot.robot_id,
+                    "robot_type": robot.robot_type,
+                    "connection_state": str(robot.connection_state),
+                    "site_id": robot.site_id,
+                    "map_id": robot.map_id,
+                    "capabilities": sorted(robot.capabilities),
+                }
+                for robot in registry.list()
+            ]
+
         maestro_agent = MaestroAgent(
             llm_provider,
-            MissionPlanParser(capabilities, known_robot_ids=set(endpoints)),
+            MissionPlanParser(fleet_capabilities, known_robot_ids=fleet_robot_ids),
             timeout_sec=settings.llm_timeout_sec,
+            fleet_catalog=fleet_catalog,
         )
     fleet_server = None
     if fleet_hub is not None:
