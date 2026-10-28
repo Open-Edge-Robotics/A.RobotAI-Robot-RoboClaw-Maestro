@@ -11,8 +11,8 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 | Phase 2 | MVP 완료 | RosGrpc unary/stream adapter, 정적 endpoint, 자동 monitor, exponential backoff, fake gRPC 3대, disconnect/reconnect/session test | 기존 RosGrpc 자체의 구조화 capability와 cancel contract는 없음 |
 | Phase 3 | 대부분 완료 | Registry, snapshot 저장, telemetry event/retention, REST API, WebSocket event, read/control/admin token | 장기 telemetry 집계 정책과 외부 IdP 기반 RBAC는 없음 |
 | Phase 4 | 핵심 구현 | Mission lifecycle, dependency/병렬 dispatch, retry/reassignment, DB resource lease, startup reconciliation, safety policy, deadline | RosGrpc ACK 분리, 실행 중 원격 cancel/pause, distributed worker 자동 scheduling loop 보강 필요 |
-| Phase 5 | 대부분 완료 | Plan parser, tool facade, Ollama/OpenAI/Azure OpenAI/Anthropic, goal API, bounded replanning, planning metric, LangSmith plan trace | provider 실제 token usage와 자동 replanning trigger는 없음 |
-| Phase 6 | 부분 구현 | React fleet/mission/event Console, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
+| Phase 5 | 대부분 완료 | Plan parser, Robot registry 기반 실시간 capability catalog, tool facade, Ollama/OpenAI/Azure OpenAI/Anthropic, goal API, bounded replanning, planning metric, LangSmith plan trace | provider 실제 token usage와 자동 replanning trigger는 없음 |
+| Phase 6 | 부분 구현 | React fleet/mission/event Console, planning 문서 편집과 Dry-run, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
 | Phase 7 | Connector 구현·실기기 검증 대기 | FleetControl proto/server, 실제 `robo_claw_grpc` outbound connector, registration/telemetry, SQLite dedup/result replay, TLS/mTLS | 실제 Robot 읽기 전용 인수, AgentStatus 통합, 실제 cancel/pause/resume handler 필요 |
 | Phase 8 | 부분 구현 | health/RBAC, Prometheus metric, optional LangSmith trace, JSON log, rate limit, event retention, backup/장애 runbook, reconnect fault test | OpenTelemetry exporter, 인증서 교체 자동화, 부하 테스트, DB restore 자동 검증 필요 |
 
@@ -41,11 +41,15 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 
 ## 개발 환경
 
+로컬에서 직접 실행하거나 테스트할 때 사용합니다. Docker Compose로만 운영한다면 이 단계는 필요 없습니다.
+
 ```bash
-cd /home/gusewan/workspace-roboclaw/robo-claw-maestro
+cd A.RobotAI-Robot-RoboClaw-Maestro
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
+
+`-e`(editable) 설치이므로 소스 수정 후 재설치 없이 프로세스만 재시작하면 반영됩니다. 반면 Docker Compose 배포는 소스가 image에 복사되므로 코드 변경 후 반드시 image를 다시 build해야 합니다([신규 호스트와 Docker Compose](#신규-호스트와-docker-compose) 참고).
 
 기본 `sqlite:///maestro.db`는 개발 편의를 위해 최초 실행 시 schema를 자동 생성합니다. PostgreSQL은 `MAESTRO_AUTO_CREATE_SCHEMA=false`로 두고 반드시 Alembic migration을 먼저 적용합니다.
 
@@ -74,7 +78,9 @@ export AZURE_OPENAI_API_KEY=<api-key>
 export AZURE_OPENAI_API_VERSION=2024-10-21
 ```
 
-`MAESTRO_LLM_PROVIDER`를 비워두면 LLM planning만 비활성화되고 Robot 관리, 직접 Mission과 emergency stop은 계속 동작합니다. Provider별 전체 설정은 [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)을 참고합니다.
+`MAESTRO_LLM_PROVIDER`를 비워두면 LLM planning만 비활성화되고 Robot 관리, 직접 Mission과 emergency stop은 계속 동작합니다.
+
+Planner는 goal 요청마다 Robot registry를 조회해 등록된 Robot의 `robot_id`, type, 연결 상태, site/map, capability 목록을 fleet catalog로 LLM prompt에 포함하고, 같은 목록으로 계획을 검증합니다. FleetControl Robot은 연결 시 `SKILLS.md` 기반 capability를 직접 보고하므로 Robot별 capability를 Maestro에 수동 등록할 필요가 없고, Maestro 재시작 없이 새 Robot이 planning에 반영됩니다. `MAESTRO_ROBOTS_JSON`의 `capabilities`는 정적 RosGrpc Robot용 보조 입력으로만 합산됩니다. Provider별 전체 설정은 [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)을 참고합니다.
 
 ## 검증 지점 1: 정적 검사와 전체 자동 테스트
 
@@ -86,7 +92,7 @@ export AZURE_OPENAI_API_VERSION=2024-10-21
 .venv/bin/pytest -q
 ```
 
-테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `103 passed`, frontend typecheck/build 성공입니다.
+테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `112 passed`, frontend typecheck/build 성공입니다.
 
 Migration도 독립적으로 확인할 수 있습니다.
 
@@ -99,6 +105,60 @@ MAESTRO_DATABASE_URL=sqlite:////tmp/maestro-check.db \
 ```
 
 기대 revision은 `0004_approvals (head)`입니다.
+
+## Planning 문서와 Dry-run
+
+Console 상단의 **설정** 탭에서 planner가 참고하는 Markdown 문서 5종을 편집하고, 로봇 없이 계획을 미리 검증할 수 있습니다.
+
+| 문서 | 파일 | 용도 |
+| --- | --- | --- |
+| Maestro 역할 | `role.md` | planner의 원칙, 안전 기준, 출력 스타일 |
+| Maestro 스킬 | `skills.md` | 자주 쓰는 작업 분해 패턴 |
+| 외부 MCP 설정 | `mcp.md` | 외부 도구 정보. 현재 Maestro는 MCP를 직접 호출하지 않으며 planning 참고용으로만 사용합니다. |
+| Troubleshooting | `troubleshooting.md` | 실패 유형별 대응과 replan 규칙 |
+| 로봇 프로필 | `robots.md` | 연결될 로봇의 특성·역할·capability. Dry-run에서 가상 로봇으로 사용합니다. |
+
+- 다섯 문서는 모두 planner system prompt에 포함됩니다. 실제 goal planning(`/api/v1/goals`)과 Dry-run에 같은 내용이 적용되며, 저장한 뒤 다음 요청부터 반영됩니다.
+- 기본 safety 규칙보다 우선하지는 않습니다. 문서로 "검증을 건너뛰어라" 같은 지시를 넣어도 deterministic 검증은 그대로 동작합니다.
+- 문서는 `MAESTRO_KNOWLEDGE_DIR/<name>.md`에 저장됩니다. Docker Compose에서는 호스트의 `./knowledge`(`MAESTRO_KNOWLEDGE_HOST_DIR`)가 mount되므로 image를 다시 build해도 유지됩니다. 파일이 없으면 내장 기본값을 사용하고, **기본값으로** 버튼은 파일을 삭제해 기본값으로 되돌립니다.
+
+`robots.md` 작성 형식:
+
+```markdown
+## cloid01
+
+- robot_type: cloid
+- site_id: lab
+- map_id: floor-1
+- capabilities: get_status, navigate_to, describe_surroundings, tidy_home
+
+거실과 주방을 담당합니다. 문턱을 넘지 못합니다.
+```
+
+`## <robot_id>` 제목 하나가 로봇 하나이고, `- capabilities:` 줄의 이름은 Robo-Claw `docs/SKILLS.md`의 스킬 이름을 사용합니다. 나머지 문장은 로봇 특징으로 planner에 전달됩니다.
+
+### Dry-run
+
+**Plan Dry-run**에 목표를 입력하고 실행하면 Mission을 만들거나 로봇에 명령하지 않고 다음을 보여줍니다.
+
+- 검증 통과 여부와 거부 사유 (`unknown capabilities` 등)
+- 실행 단계(stage)별 Task와 병렬 여부
+- Task별 배정 후보 로봇(연결된 로봇은 실제 상태, 프로필 로봇은 `PROFILE`)
+- 경고: 배정 가능한 로봇 없음, `required_capabilities` 누락, 수행 불가능한 `preferred_robot_id`
+- LLM에 보낸 system/user prompt와 원본 응답
+
+연결된 로봇과 프로필 로봇의 `robot_id`가 같으면 연결된 로봇 정보를 우선합니다. **로봇 프로필 포함**을 끄면 실제 연결된 로봇만으로 검증하므로 실제 `/api/v1/goals` 결과와 같은 조건이 됩니다.
+
+API로도 사용할 수 있습니다.
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/planning/dry-run \
+  -H "Authorization: Bearer ${MAESTRO_CONTROL_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"goal":"내가 없는 동안 집안을 정리해줘","include_profiles":true}'
+```
+
+LLM provider 연결 실패는 `502 LLM provider error: ...`로 원인과 함께 반환됩니다.
 
 ## 검증 지점 2: 간단한 in-memory fleet
 
@@ -380,14 +440,30 @@ export MAESTRO_LANGSMITH_TRACING=false
 
 ```bash
 git clone <robo-claw-maestro-repository-url>
-cd robo-claw-maestro
+cd A.RobotAI-Robot-RoboClaw-Maestro
 ./scripts/bootstrap_maestro_host.sh --no-start
 editor .env
 ./scripts/bootstrap_maestro_host.sh
 python3 scripts/verify_maestro_host.py --env-file .env
 ```
 
-기존 `.env`를 덮어쓰지 않으며 read/control/admin token과 PostgreSQL password를 자동 생성합니다. 전체 절차와 옵션은 [다중 로봇 연동 테스트](docs/ROBOT_TEST_MANUAL.md#2-신규-호스트-빠른-설치와-실행)를 참고합니다.
+`.env`는 저장소 루트(`docker-compose.yml`과 같은 폴더)에 생성됩니다. 기존 `.env`를 덮어쓰지 않으며 read/control/admin token과 PostgreSQL password를 자동 생성합니다. Console 첫 접속 시 우측 상단 token 입력란에 `.env`의 `MAESTRO_CONTROL_TOKEN`을 입력해야 하며, 입력하지 않으면 `403 forbidden`이 표시됩니다.
+
+코드를 수정했거나 새 버전을 받은 경우에는 `--no-build` 없이 실행해 image를 다시 build합니다. `--no-build`는 `.env` 값만 바꿨을 때 사용합니다.
+
+```bash
+./scripts/bootstrap_maestro_host.sh             # 코드 변경 반영 (rebuild + 재기동)
+./scripts/bootstrap_maestro_host.sh --no-build  # 설정(.env)만 변경
+```
+
+호스트 포트가 다른 서비스와 충돌하면 `.env`에서 변경합니다. Container 내부 포트는 바뀌지 않으므로 다른 설정은 수정할 필요가 없습니다.
+
+| 변수 | 기본값 | 용도 |
+| --- | --- | --- |
+| `MAESTRO_WEB_PORT` | `3000` | Web Console. `.env.example`에 없으므로 필요 시 추가합니다. |
+| `MAESTRO_PORT` | `8000` | REST API/WebSocket 직접 호출(curl, script). Console은 내부 proxy를 사용하므로 이 포트를 거치지 않습니다. |
+| `MAESTRO_FLEET_CONTROL_PORT` | `50053` | Robot outbound FleetControl 접속. 변경 시 Robot의 `ROBOT_PORT`도 같은 값으로 맞춥니다. |
+| `POSTGRES_PORT` | `5432` | PostgreSQL. 호스트에 PostgreSQL이 이미 있으면 변경합니다. | 전체 절차와 옵션은 [다중 로봇 연동 테스트](docs/ROBOT_TEST_MANUAL.md#2-신규-호스트-빠른-설치와-실행)를 참고합니다.
 
 수동 실행이 필요한 경우:
 
@@ -406,7 +482,31 @@ curl -fsS http://127.0.0.1:8000/ready
 
 ## 실제 Robo-Claw 2대 이상 연결
 
-실제 로봇은 각 Robo-Claw의 `robo_claw_grpc` 포트인 `50051`을 사용합니다. 로봇별 ID와 endpoint를 `MAESTRO_ROBOTS_JSON`에 등록합니다. 상세 안전 절차, offline/reconnect, emergency stop 검증은 [다중 로봇 연동 테스트 매뉴얼](docs/ROBOT_TEST_MANUAL.md)을 참고합니다.
+두 가지 방식을 지원하며, Robot 수가 늘어나는 환경에서는 FleetControl 방식을 권장합니다.
+
+### 방식 A: FleetControl outbound (권장)
+
+Robot이 Maestro로 접속하므로 Maestro에 Robot endpoint나 capability를 등록할 필요가 없습니다.
+
+1. Maestro `.env`에서 `MAESTRO_FLEET_CONTROL_ENABLED=true`로 설정하고 재기동합니다. 방화벽에서 `50053/tcp`를 허용합니다.
+2. AI Config Server의 Robot 프로필 → **Maestro FleetControl 연동**에서 Robot별로 설정합니다.
+
+   | 항목 | 값 |
+   | --- | --- |
+   | `MAESTRO_IP` | Robot에서 접근 가능한 Maestro 호스트 IP (`127.0.0.1` 불가) |
+   | `ROBOT_PORT` | Maestro의 `MAESTRO_FLEET_CONTROL_PORT` (기본 `50053`, API 포트 아님) |
+   | `ROBOT_ID` | Robot마다 고유한 값 (예: `cloid01`, `cloid02`) |
+   | `ROBOT_SITE_ID`, `ROBOT_MAP_ID` | 같은 공간·지도를 쓰는 Robot은 같은 값 |
+   | `RC_SKILLS_GUIDE_FILE` | 비워두면 Robo-Claw의 `docs/SKILLS.md` 사용 |
+
+3. 각 Robot을 `--use-grpc`로 실행합니다: `./rclaw launch <robot-profile> <environment> --docker --use-grpc`
+4. Console 또는 `GET /api/v1/robots`에서 두 Robot이 `ONLINE`이고 capability가 표시되는지 확인합니다.
+
+### 방식 B: 정적 RosGrpc endpoint
+
+Maestro가 각 Robo-Claw의 `robo_claw_grpc` 포트 `50051`로 직접 접속합니다. Robot별 ID, endpoint, capability를 `MAESTRO_ROBOTS_JSON`에 등록합니다.
+
+상세 안전 절차, offline/reconnect, emergency stop 검증은 [다중 로봇 연동 테스트 매뉴얼](docs/ROBOT_TEST_MANUAL.md)을 참고합니다.
 
 ## 주요 API
 
@@ -425,7 +525,13 @@ GET  /api/v1/approvals
 POST /api/v1/approvals/{approval_id}/approve
 POST /api/v1/approvals/{approval_id}/reject
 POST /api/v1/goals
+POST /api/v1/planning/dry-run
 GET  /api/v1/planning/metrics
+GET  /api/v1/knowledge
+GET  /api/v1/knowledge/robots/profiles
+GET  /api/v1/knowledge/{name}
+PUT  /api/v1/knowledge/{name}
+POST /api/v1/knowledge/{name}/reset
 GET  /api/v1/missions
 POST /api/v1/missions
 POST /api/v1/missions/{mission_id}/start
