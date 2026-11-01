@@ -1,6 +1,7 @@
 import React, { FormEvent, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Settings } from "./Settings";
+import { BehaviorTree, type TreeSeed } from "./BehaviorTree";
+import { type DryRunResult, Settings } from "./Settings";
 import "./styles.css";
 
 type Robot = {
@@ -59,7 +60,14 @@ function App() {
   const [token, setToken] = useState(() => localStorage.getItem("maestro-token") ?? "");
   const [error, setError] = useState("");
   const [snapshot, setSnapshot] = useState<{ robotId: string; src: string } | null>(null);
-  const [view, setView] = useState<"fleet" | "settings">("fleet");
+  const [view, setView] = useState<"fleet" | "settings" | "bt">("fleet");
+  const [treeSeed, setTreeSeed] = useState<TreeSeed | null>(null);
+  const clearTreeSeed = useCallback(() => setTreeSeed(null), []);
+
+  function openBehaviorTree(goal: string, result: DryRunResult) {
+    setTreeSeed({ goal, result });
+    setView("bt");
+  }
 
   const request = useCallback(async (path: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -175,9 +183,14 @@ function App() {
     <nav className="tabs">
       <button className={view === "fleet" ? "active" : ""} onClick={() => setView("fleet")}>관제</button>
       <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>설정</button>
+      <button className={view === "bt" ? "active" : ""} onClick={() => setView("bt")}>Behavior Tree</button>
     </nav>
     {error && <div className="error">{error}</div>}
-    {view === "settings" ? <Settings request={request} /> : <>
+    {/* Views stay mounted and are only hidden, so dry-run results and the tree being
+        edited survive tab switches until the next dry-run or conversion replaces them. */}
+    <div hidden={view !== "settings"}><Settings request={request} onOpenBehaviorTree={openBehaviorTree} /></div>
+    <div hidden={view !== "bt"}><BehaviorTree request={request} seed={treeSeed} onSeedConsumed={clearTreeSeed} /></div>
+    <div hidden={view !== "fleet"}>
     {snapshot && <div className="snapshot-modal" role="dialog" aria-modal="true" onClick={() => setSnapshot(null)}><div><h2>{snapshot.robotId} camera</h2><img src={snapshot.src} alt={`${snapshot.robotId} snapshot`} /><button onClick={() => setSnapshot(null)}>닫기</button></div></div>}
 
     <section>
@@ -226,7 +239,7 @@ function App() {
         </article>)}</div>
       </div>
     </section>
-    </>}
+    </div>
   </main>;
 }
 

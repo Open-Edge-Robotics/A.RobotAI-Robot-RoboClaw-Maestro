@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from robo_claw_maestro.adapters.database.migrations import upgrade_database
 from robo_claw_maestro.adapters.database.sqlmodel import (
@@ -21,6 +22,8 @@ from robo_claw_maestro.adapters.grpc.fleet_control_server import (
 )
 from robo_claw_maestro.adapters.grpc.multi_robot import MultiRobotGateway
 from robo_claw_maestro.adapters.llm.factory import build_llm_provider
+from robo_claw_maestro.agent.behavior_tree import BehaviorTreeStore
+from robo_claw_maestro.agent.knowledge import KnowledgeBase
 from robo_claw_maestro.agent.maestro_agent import MaestroAgent
 from robo_claw_maestro.agent.planner import MissionPlanParser
 from robo_claw_maestro.api.app import create_app
@@ -113,6 +116,7 @@ def build_app():
     async def startup_reconcile() -> None:
         await orchestrator.reconcile_all(reconciliation)
 
+    knowledge = KnowledgeBase(settings.knowledge_dir)
     maestro_agent = None
     llm_provider = build_llm_provider(settings)
     if llm_provider is not None:
@@ -146,9 +150,15 @@ def build_app():
 
         maestro_agent = MaestroAgent(
             llm_provider,
-            MissionPlanParser(fleet_capabilities, known_robot_ids=fleet_robot_ids),
+            MissionPlanParser(
+                fleet_capabilities,
+                known_robot_ids=fleet_robot_ids,
+                single_skill=settings.plan_single_skill,
+                max_tasks=settings.plan_max_tasks,
+            ),
             timeout_sec=settings.llm_timeout_sec,
             fleet_catalog=fleet_catalog,
+            knowledge=knowledge,
         )
     fleet_server = None
     if fleet_hub is not None:
@@ -175,6 +185,8 @@ def build_app():
         control_rate_limit_per_minute=settings.control_rate_limit_per_minute,
         event_retention_days=settings.event_retention_days,
         approval_service=approval_service,
+        knowledge=knowledge,
+        behavior_trees=BehaviorTreeStore(Path(settings.knowledge_dir) / "behavior_trees"),
     )
 
 

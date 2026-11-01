@@ -32,3 +32,13 @@ button:disabled { cursor: default; opacity: .5; }.ghost { background: transparen
 details { border: 1px solid #244943; border-radius: 8px; padding: 10px 12px; background: #0b1c1a; } summary { cursor: pointer; color: #9fd9cf; }
 pre { white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; font-size: .78rem; color: #cfe5e1; }
 @media (max-width: 860px) { .settings-layout, .two-column { grid-template-columns: 1fr; } }
+select { border: 1px solid #32635c; border-radius: 7px; background: #102320; color: #e8f4f2; padding: 10px 12px; }
+.bt-toolbar, .bt-loop, .bt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }.bt-loop { margin-top: 10px; font-size: .82rem; color: #a9c9c3; }.bt-loop input[type=number] { width: 90px; margin-left: 6px; }
+.bt-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr); gap: 14px; align-items: start; }
+.bt-tree, .bt-tree ul { list-style: none; margin: 0; padding-left: 18px; }.bt-tree { padding-left: 0; }.bt-tree ul { border-left: 1px dashed #2f5c55; margin-left: 10px; }
+.bt-node { display: flex; align-items: baseline; gap: 6px; width: 100%; margin: 3px 0; padding: 6px 9px; text-align: left; font-weight: 400; background: #0b1c1a; }.bt-node strong { font-size: .8rem; }.bt-node small { margin-left: auto; }
+.bt-node.active { border-color: #63d7c4; background: #164a42; }.bt-node.invalid { border-color: #b94e57; }.bt-icon { width: 16px; color: #7ddcca; text-align: center; }
+.bt-sequence strong { color: #9fd9cf; }.bt-fallback strong { color: #ffe399; }.bt-parallel strong { color: #b9d4ff; }.bt-action strong { color: #9bffe0; }.bt-condition strong { color: #ffc4c8; }
+.bt-inspector { display: grid; gap: 12px; position: sticky; top: 12px; }.bt-form { display: grid; gap: 10px; }.bt-form label { display: grid; gap: 4px; font-size: .78rem; color: #a9c9c3; }.bt-form textarea { min-height: 110px; font: .8rem/1.4 ui-monospace, monospace; }
+.bt-issues { margin: 8px 0 0; padding-left: 18px; font-size: .78rem; }.bt-json { width: 100%; box-sizing: border-box; min-height: 360px; margin-top: 10px; font: .8rem/1.4 ui-monospace, monospace; }
+@media (max-width: 960px) { .bt-layout { grid-template-columns: 1fr; } .bt-inspector { position: static; } }

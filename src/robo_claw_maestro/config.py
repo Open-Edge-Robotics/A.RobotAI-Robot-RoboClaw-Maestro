@@ -40,6 +40,9 @@ class Settings:
     log_level: str = "INFO"
     event_retention_days: int = 30
     auto_create_schema: bool = True
+    knowledge_dir: str = "knowledge"
+    plan_single_skill: bool = True
+    plan_max_tasks: int = 100
     robots: tuple[dict[str, Any], ...] = ()
 
     @classmethod
@@ -96,6 +99,9 @@ class Settings:
         rate_limit = int(os.getenv("MAESTRO_CONTROL_RATE_LIMIT_PER_MINUTE", "120"))
         if rate_limit < 1:
             raise ValueError("MAESTRO_CONTROL_RATE_LIMIT_PER_MINUTE must be positive")
+        plan_max_tasks = int(os.getenv("MAESTRO_PLAN_MAX_TASKS", "100"))
+        if not 1 <= plan_max_tasks <= 500:
+            raise ValueError("MAESTRO_PLAN_MAX_TASKS must be between 1 and 500")
         retention_days = int(os.getenv("MAESTRO_EVENT_RETENTION_DAYS", "30"))
         if retention_days < 1:
             raise ValueError("MAESTRO_EVENT_RETENTION_DAYS must be positive")
@@ -133,5 +139,9 @@ class Settings:
             log_level=os.getenv("MAESTRO_LOG_LEVEL", "INFO"),
             event_retention_days=retention_days,
             auto_create_schema=auto_create_schema,
+            knowledge_dir=os.getenv("MAESTRO_KNOWLEDGE_DIR", "knowledge"),
+            plan_single_skill=os.getenv("MAESTRO_PLAN_SINGLE_SKILL", "true").lower()
+            in {"1", "true", "yes"},
+            plan_max_tasks=plan_max_tasks,
             robots=tuple(robots),
         )

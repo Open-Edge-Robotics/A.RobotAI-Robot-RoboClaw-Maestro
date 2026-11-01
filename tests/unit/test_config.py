@@ -55,3 +55,12 @@ def test_settings_reject_invalid_robot_json(monkeypatch):
 
     with pytest.raises(ValueError, match="valid JSON"):
         Settings.from_env()
+
+
+def test_settings_plan_max_tasks_is_configurable_and_bounded(monkeypatch):
+    assert Settings.from_env().plan_max_tasks == 100
+    monkeypatch.setenv("MAESTRO_PLAN_MAX_TASKS", "250")
+    assert Settings.from_env().plan_max_tasks == 250
+    monkeypatch.setenv("MAESTRO_PLAN_MAX_TASKS", "0")
+    with pytest.raises(ValueError, match="MAESTRO_PLAN_MAX_TASKS"):
+        Settings.from_env()

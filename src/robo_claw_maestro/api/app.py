@@ -11,7 +11,19 @@ from typing import Any
 from uuid import uuid4
 
 from robo_claw_maestro.adapters.grpc.fleet_control_server import FleetControlServer
-from robo_claw_maestro.agent.maestro_agent import MaestroAgent, ReplanningBudgetExceeded
+from robo_claw_maestro.agent.behavior_tree import (
+    CONDITIONS,
+    BehaviorTreeStore,
+    UnknownTree,
+    plan_to_tree,
+    validate_tree,
+)
+from robo_claw_maestro.agent.knowledge import KnowledgeBase, KnowledgeDocument, UnknownDocument
+from robo_claw_maestro.agent.maestro_agent import (
+    LlmProviderError,
+    MaestroAgent,
+    ReplanningBudgetExceeded,
+)
 from robo_claw_maestro.agent.planner import PlanValidationError
 from robo_claw_maestro.application.approval_service import ApprovalService
 from robo_claw_maestro.application.mission_orchestrator import MissionOrchestrator
@@ -81,6 +93,12 @@ def _event_json(event: DomainEvent) -> dict[str, Any]:
     }
 
 
+def _document_json(document: KnowledgeDocument) -> dict[str, Any]:
+    data = asdict(document)
+    data["updated_at"] = document.updated_at.isoformat() if document.updated_at else None
+    return data
+
+
 def _mission_json(mission: Mission) -> dict[str, Any]:
     data = asdict(mission)
     data["status"] = mission.status.value
@@ -104,6 +122,8 @@ def create_app(
     control_rate_limit_per_minute: int = 120,
     event_retention_days: int = 30,
     approval_service: ApprovalService | None = None,
+    knowledge: KnowledgeBase | None = None,
+    behavior_trees: BehaviorTreeStore | None = None,
 ):
     """Create the HTTP app.
 
@@ -151,6 +171,23 @@ def create_app(
         goal: str = Field(min_length=1, max_length=8000)
         created_by: str = Field(default="api", min_length=1, max_length=200)
         auto_start: bool = False
+
+    class DryRunInput(BaseModel):
+        goal: str = Field(min_length=1, max_length=8000)
+        include_profiles: bool = True
+
+    class DocumentInput(BaseModel):
+        content: str = Field(max_length=64 * 1024)
+
+    class TreeFromPlanInput(BaseModel):
+        name: str = Field(default="plan", max_length=64)
+        goal: str = Field(default="", max_length=8000)
+        tasks: list[dict[str, Any]] = Field(default_factory=list)
+        repeat: dict[str, Any] | None = None
+        battery_guard_pct: int | None = Field(default=20, ge=1, le=100)
+
+    class TreeInput(BaseModel):
+        document: dict[str, Any]
 
     class ReplanInput(BaseModel):
         failure_context: dict[str, Any] = Field(default_factory=dict)
@@ -233,7 +270,9 @@ def create_app(
                     headers={"Retry-After": "60"},
                 )
             bucket.append(now)
-        traced_path = request.url.path.startswith(("/api/v1/goals", "/api/v1/missions"))
+        traced_path = request.url.path.startswith(
+            ("/api/v1/goals", "/api/v1/missions", "/api/v1/planning")
+        )
         if traced_path and request.method != "GET":
             return await _trace_api_request(request.method, request.url.path, request, call_next)
         return await call_next(request)
@@ -414,6 +453,147 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except TimeoutError as exc:
             raise HTTPException(status_code=504, detail="LLM provider timeout") from exc
+        except LlmProviderError as exc:
+            raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
+
+    @app.post("/api/v1/planning/dry-run")
+    async def planning_dry_run(payload: DryRunInput) -> dict[str, Any]:
+        if maestro_agent is None:
+            raise HTTPException(status_code=503, detail="LLM planner is not configured")
+        try:
+            result = await maestro_agent.dry_run(
+                payload.goal, include_profiles=payload.include_profiles
+            )
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="LLM provider timeout") from exc
+        except LlmProviderError as exc:
+            raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
+        return asdict(result)
+
+    def require_knowledge() -> KnowledgeBase:
+        if knowledge is None:
+            raise HTTPException(status_code=503, detail="knowledge base is not configured")
+        return knowledge
+
+    @app.get("/api/v1/knowledge")
+    async def knowledge_documents() -> list[dict[str, Any]]:
+        return [_document_json(document) for document in require_knowledge().list()]
+
+    @app.get("/api/v1/knowledge/robots/profiles")
+    async def knowledge_robot_profiles() -> list[dict[str, Any]]:
+        return [asdict(profile) for profile in require_knowledge().robot_profiles()]
+
+    @app.get("/api/v1/knowledge/{name}")
+    async def knowledge_document(name: str) -> dict[str, Any]:
+        try:
+            return _document_json(require_knowledge().get(name))
+        except UnknownDocument as exc:
+            raise HTTPException(status_code=404, detail=f"unknown document: {name}") from exc
+
+    @app.put("/api/v1/knowledge/{name}")
+    async def save_knowledge_document(name: str, payload: DocumentInput) -> dict[str, Any]:
+        try:
+            return _document_json(require_knowledge().save(name, payload.content))
+        except UnknownDocument as exc:
+            raise HTTPException(status_code=404, detail=f"unknown document: {name}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    @app.post("/api/v1/knowledge/{name}/reset")
+    async def reset_knowledge_document(name: str) -> dict[str, Any]:
+        try:
+            return _document_json(require_knowledge().reset(name))
+        except UnknownDocument as exc:
+            raise HTTPException(status_code=404, detail=f"unknown document: {name}") from exc
+
+    def robot_skills() -> dict[str, dict[str, Any]]:
+        """Live robots plus robots.md profiles; live data wins on the same robot_id."""
+        robots: dict[str, dict[str, Any]] = {}
+        if knowledge is not None:
+            for profile in knowledge.robot_profiles():
+                robots[profile.robot_id] = {
+                    "source": "profile",
+                    "capabilities": set(profile.capabilities),
+                }
+        for robot in registry.list():
+            robots[robot.robot_id] = {"source": "live", "capabilities": set(robot.capabilities)}
+        return robots
+
+    def tree_report(document: dict[str, Any]) -> dict[str, Any]:
+        skills = {robot_id: item["capabilities"] for robot_id, item in robot_skills().items()}
+        issues = validate_tree(document, skills)
+        return {
+            "document": document,
+            "valid": not any(issue.level == "error" for issue in issues),
+            "issues": [asdict(issue) for issue in issues],
+        }
+
+    def require_trees() -> BehaviorTreeStore:
+        if behavior_trees is None:
+            raise HTTPException(status_code=503, detail="behavior tree store is not configured")
+        return behavior_trees
+
+    @app.get("/api/v1/behavior-trees/catalog")
+    async def behavior_tree_catalog() -> dict[str, Any]:
+        return {
+            "robots": [
+                {
+                    "robot_id": robot_id,
+                    "source": item["source"],
+                    "capabilities": sorted(item["capabilities"]),
+                }
+                for robot_id, item in sorted(robot_skills().items())
+            ],
+            "conditions": sorted(CONDITIONS),
+        }
+
+    @app.post("/api/v1/behavior-trees/from-plan")
+    async def behavior_tree_from_plan(payload: TreeFromPlanInput) -> dict[str, Any]:
+        if not payload.tasks:
+            raise HTTPException(status_code=422, detail="plan has no tasks")
+        return tree_report(
+            plan_to_tree(
+                name=payload.name,
+                goal=payload.goal,
+                tasks=payload.tasks,
+                repeat=payload.repeat,
+                battery_guard_pct=payload.battery_guard_pct,
+            )
+        )
+
+    @app.post("/api/v1/behavior-trees/validate")
+    async def behavior_tree_validate(payload: TreeInput) -> dict[str, Any]:
+        return tree_report(payload.document)
+
+    @app.get("/api/v1/behavior-trees")
+    async def behavior_tree_list() -> list[dict[str, Any]]:
+        return require_trees().list()
+
+    @app.get("/api/v1/behavior-trees/{name}")
+    async def behavior_tree_get(name: str) -> dict[str, Any]:
+        try:
+            return tree_report(require_trees().get(name))
+        except UnknownTree as exc:
+            raise HTTPException(status_code=404, detail=f"unknown behavior tree: {name}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/api/v1/behavior-trees/{name}")
+    async def behavior_tree_save(name: str, payload: TreeInput) -> dict[str, Any]:
+        try:
+            return tree_report(require_trees().save(name, payload.document))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/behavior-trees/{name}")
+    async def behavior_tree_delete(name: str) -> dict[str, str]:
+        try:
+            require_trees().delete(name)
+        except UnknownTree as exc:
+            raise HTTPException(status_code=404, detail=f"unknown behavior tree: {name}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"deleted": name}
 
     @app.get("/api/v1/planning/metrics")
     async def planning_metrics() -> dict[str, int | float]:
@@ -516,6 +696,8 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except TimeoutError as exc:
             raise HTTPException(status_code=504, detail="LLM provider timeout") from exc
+        except LlmProviderError as exc:
+            raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
 
     @app.post("/api/v1/missions/{mission_id}/cancel")
     async def cancel_mission(mission_id: str) -> dict[str, Any]:

@@ -12,7 +12,7 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 | Phase 3 | 대부분 완료 | Registry, snapshot 저장, telemetry event/retention, REST API, WebSocket event, read/control/admin token | 장기 telemetry 집계 정책과 외부 IdP 기반 RBAC는 없음 |
 | Phase 4 | 핵심 구현 | Mission lifecycle, dependency/병렬 dispatch, retry/reassignment, DB resource lease, startup reconciliation, safety policy, deadline | RosGrpc ACK 분리, 실행 중 원격 cancel/pause, distributed worker 자동 scheduling loop 보강 필요 |
 | Phase 5 | 대부분 완료 | Plan parser, Robot registry 기반 실시간 capability catalog, tool facade, Ollama/OpenAI/Azure OpenAI/Anthropic, goal API, bounded replanning, planning metric, LangSmith plan trace | provider 실제 token usage와 자동 replanning trigger는 없음 |
-| Phase 6 | 부분 구현 | React fleet/mission/event Console, planning 문서 편집과 Dry-run, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
+| Phase 6 | 부분 구현 | React fleet/mission/event Console, planning 문서 편집과 Dry-run, Behavior Tree 구성·검증, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
 | Phase 7 | Connector 구현·실기기 검증 대기 | FleetControl proto/server, 실제 `robo_claw_grpc` outbound connector, registration/telemetry, SQLite dedup/result replay, TLS/mTLS | 실제 Robot 읽기 전용 인수, AgentStatus 통합, 실제 cancel/pause/resume handler 필요 |
 | Phase 8 | 부분 구현 | health/RBAC, Prometheus metric, optional LangSmith trace, JSON log, rate limit, event retention, backup/장애 runbook, reconnect fault test | OpenTelemetry exporter, 인증서 교체 자동화, 부하 테스트, DB restore 자동 검증 필요 |
 
@@ -92,7 +92,7 @@ Planner는 goal 요청마다 Robot registry를 조회해 등록된 Robot의 `rob
 .venv/bin/pytest -q
 ```
 
-테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `112 passed`, frontend typecheck/build 성공입니다.
+테스트에는 domain 상태 머신, DB 재시작 복구, idempotency, 실제 gRPC loopback 3대, REST API, RBAC, retry/reassignment, resource lock, reconciliation, LLM plan validation과 LangSmith 비활성 호환성/redaction이 포함됩니다. 현재 검증 기준은 backend `119 passed`, frontend typecheck/build 성공입니다.
 
 Migration도 독립적으로 확인할 수 있습니다.
 
@@ -159,6 +159,60 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/planning/dry-run \
 ```
 
 LLM provider 연결 실패는 `502 LLM provider error: ...`로 원인과 함께 반환됩니다.
+
+### 단일 스킬 단계 Plan
+
+기본값(`MAESTRO_PLAN_SINGLE_SKILL=true`)에서 planner는 Task 하나를 **스킬 하나 호출**로 만들도록 지시받고, 검증에서도 이를 강제합니다.
+
+```json
+{
+  "summary": "거실 정리 한 사이클",
+  "repeat": {"interval_sec": 3600, "max_cycles": 0},
+  "tasks": [
+    {"task_id": "go-living", "instruction": "거실로 이동", "skill_name": "navigate_to",
+     "params": {"target_name": "거실"}, "required_capabilities": ["navigate_to"]},
+    {"task_id": "scan-living", "instruction": "거실 스캔", "skill_name": "scan_room",
+     "depends_on": ["go-living"], "on_failure": "continue"},
+    {"task_id": "tidy-living", "instruction": "거실 정리", "skill_name": "tidy_home",
+     "params": {"scope": "room", "target_location": "거실"}, "depends_on": ["scan-living"]}
+  ]
+}
+```
+
+- `skill_name`이 없거나 `required_capabilities`에 다른 capability가 섞이면 422로 거부합니다.
+- `on_failure`: `abort`(기본, 이번 사이클 중단) 또는 `continue`(이 단계만 건너뜀)
+- `repeat`: "주기적으로" 같은 목표는 한 사이클만 계획하고 반복 간격을 둡니다. `max_cycles` 0은 중단할 때까지입니다.
+- Dry-run은 Task마다 배정 로봇을 제안합니다. 지정 로봇(`preferred_robot_id`)을 먼저 따르고, 의존 단계는 앞 단계를 실행한 로봇에 이어서 배정하며, 나머지는 같은 단계 안에서 부하가 적은 로봇에 나눕니다.
+- 기존처럼 자유 형식 Task를 허용하려면 `MAESTRO_PLAN_SINGLE_SKILL=false`로 설정합니다.
+- 한 Plan의 최대 Task 수는 `MAESTRO_PLAN_MAX_TASKS`(기본 100, 1~500)로 조정합니다. 넘으면 `plan exceeds maximum task count`로 거부됩니다.
+
+> 현재 Mission 실행(dispatcher)은 Task를 여전히 자연어 `ExecuteTask`로 로봇에 보내며 `skill_name`을 사용하지 않습니다. 단일 스킬 형식은 Dry-run 검증과 Behavior Tree 구성에 사용됩니다.
+
+## Behavior Tree 구성
+
+Console의 **Behavior Tree** 탭에서 단일 스킬 Plan을 Behavior Tree로 바꾸고 편집·검증·저장합니다. 노드 체계는 Robo-Claw BT 엔진(`docs/behavior-tree/`)과 같습니다.
+
+| 노드 | 의미 |
+| --- | --- |
+| `Sequence` | 자식을 순서대로, 하나라도 실패하면 실패 |
+| `Fallback` | 첫 성공에서 종료, 모두 실패하면 실패 |
+| `Parallel` | 자식을 동시에, `success_count`개 성공하면 성공 |
+| `Action` | 로봇 하나의 스킬 호출 (`robot_id`, `skill`, `params`, `timeout_sec`, `max_attempts`) |
+| `Condition` | 조건 검사. 현재 `CheckBatterySufficient`(`min_pct`) |
+| `AlwaysSuccess` | 항상 성공 (Robo-Claw의 `CycleDone` 관용구) |
+| `SleepBetweenCycles` | 반복 사이클 사이 대기 |
+
+1. **설정 → Plan Dry-run**을 실행하고 결과의 **Behavior Tree로 변환**을 누릅니다.
+2. 변환 규칙(결정적, LLM 미사용):
+   - 같은 단계(stage)의 Task는 `Parallel`(모두 성공), 단계끼리는 `Sequence`로 묶습니다.
+   - `on_failure: continue`인 Task는 `Fallback[Action, AlwaysSuccess]`로 감쌉니다.
+   - 배정된 로봇마다 배터리 `Condition`(기본 20%)을 앞에 둡니다.
+   - `repeat`이 있으면 `Sequence[배터리 조건…, Fallback[CycleWork, CycleDone], SleepBetweenCycles]` 형태가 됩니다. Robo-Claw `autonomous_act` patrol 트리와 같은 구조입니다.
+3. 트리에서 노드를 선택해 자식 추가, 삭제, 위/아래 이동, 속성(로봇, 스킬, params 등) 수정을 합니다. 전체 구조는 **JSON 편집**에서도 고칠 수 있습니다.
+4. 편집할 때마다 자동으로 검증합니다. 노드 구조, `Parallel.success_count`, 로봇 존재 여부, **로봇이 해당 스킬을 가졌는지**(연결 로봇 + `robots.md` 프로필 기준)를 확인하고 오류 노드를 빨간 테두리로 표시합니다.
+5. 이름(소문자, 숫자, `-`, `_`)을 정해 저장합니다. `MAESTRO_KNOWLEDGE_DIR/behavior_trees/<name>.json`에 저장됩니다.
+
+> Behavior Tree는 현재 구성·검증·저장까지 지원합니다. Maestro나 Robo-Claw에서 이 JSON을 실행하는 기능은 아직 없습니다. Robo-Claw의 BT는 스킬 코드 안에 고정된 트리로 구현되어 있어, 실행하려면 JSON 트리를 받아 조립하는 Robo-Claw 쪽 스킬이나 Maestro 쪽 실행기가 추가로 필요합니다.
 
 ## 검증 지점 2: 간단한 in-memory fleet
 
@@ -532,6 +586,13 @@ GET  /api/v1/knowledge/robots/profiles
 GET  /api/v1/knowledge/{name}
 PUT  /api/v1/knowledge/{name}
 POST /api/v1/knowledge/{name}/reset
+GET  /api/v1/behavior-trees
+GET  /api/v1/behavior-trees/catalog
+POST /api/v1/behavior-trees/from-plan
+POST /api/v1/behavior-trees/validate
+GET  /api/v1/behavior-trees/{name}
+PUT  /api/v1/behavior-trees/{name}
+DELETE /api/v1/behavior-trees/{name}
 GET  /api/v1/missions
 POST /api/v1/missions
 POST /api/v1/missions/{mission_id}/start

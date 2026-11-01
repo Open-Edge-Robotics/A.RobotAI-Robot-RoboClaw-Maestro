@@ -207,3 +207,91 @@ def test_ready_reports_database_connection():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "database": "ok"}
+
+
+def test_knowledge_and_dry_run_endpoints():
+    from robo_claw_maestro.agent.knowledge import KnowledgeBase
+
+    gateway = FakeRobotGateway()
+    registry = RobotRegistry(gateway)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    knowledge = KnowledgeBase(None)
+    plan = (
+        '{"tasks":[{"task_id":"t1","instruction":"check","required_capabilities":["get_status"]}]}'
+    )
+    agent = MaestroAgent(FakeLlmProvider([plan]), MissionPlanParser(set()), knowledge=knowledge)
+    client = TestClient(
+        create_app(registry, orchestrator, maestro_agent=agent, knowledge=knowledge)
+    )
+
+    documents = client.get("/api/v1/knowledge").json()
+    assert [item["name"] for item in documents][:2] == ["role", "skills"]
+    saved = client.put(
+        "/api/v1/knowledge/robots", json={"content": "## r1\n- capabilities: get_status\n"}
+    )
+    assert saved.status_code == 200 and saved.json()["is_default"] is False
+    assert client.get("/api/v1/knowledge/robots/profiles").json()[0]["robot_id"] == "r1"
+    assert client.get("/api/v1/knowledge/unknown").status_code == 404
+
+    response = client.post("/api/v1/planning/dry-run", json={"goal": "check robots"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] and body["assignable"]
+    assert body["tasks"][0]["candidates"][0]["robot_id"] == "r1"
+    assert orchestrator.list() == []
+    assert client.post("/api/v1/knowledge/robots/reset").json()["is_default"] is True
+
+
+def test_goal_endpoint_reports_provider_failure_as_bad_gateway():
+    class BrokenProvider:
+        async def complete(self, system_prompt, user_prompt, timeout_sec):
+            raise OSError("Name or service not known")
+
+    gateway = FakeRobotGateway()
+    registry = RobotRegistry(gateway)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    agent = MaestroAgent(BrokenProvider(), MissionPlanParser(set()))
+    client = TestClient(create_app(registry, orchestrator, maestro_agent=agent))
+
+    response = client.post("/api/v1/goals", json={"goal": "inspect"})
+
+    assert response.status_code == 502
+    assert "Name or service not known" in response.json()["detail"]
+
+
+def test_behavior_tree_endpoints():
+    from robo_claw_maestro.agent.behavior_tree import BehaviorTreeStore
+    from robo_claw_maestro.agent.knowledge import KnowledgeBase
+
+    gateway = FakeRobotGateway()
+    registry = RobotRegistry(gateway)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    knowledge = KnowledgeBase(None)
+    knowledge.save("robots", "## r1\n- capabilities: get_status\n")
+    client = TestClient(
+        create_app(
+            registry,
+            orchestrator,
+            knowledge=knowledge,
+            behavior_trees=BehaviorTreeStore(None),
+        )
+    )
+
+    catalog = client.get("/api/v1/behavior-trees/catalog").json()
+    assert catalog["robots"] == [
+        {"robot_id": "r1", "source": "profile", "capabilities": ["get_status"]}
+    ]
+    task = {"task_id": "s", "stage": 1, "skill_name": "get_status", "assigned_robot_id": "r1"}
+    converted = client.post(
+        "/api/v1/behavior-trees/from-plan", json={"name": "check", "tasks": [task]}
+    ).json()
+    assert converted["valid"], converted["issues"]
+
+    saved = client.put("/api/v1/behavior-trees/check", json={"document": converted["document"]})
+    assert saved.status_code == 200
+    assert [item["name"] for item in client.get("/api/v1/behavior-trees").json()] == ["check"]
+    assert client.get("/api/v1/behavior-trees/check").json()["valid"]
+    assert client.put("/api/v1/behavior-trees/Bad Name", json={"document": {}}).status_code == 422
+    assert client.delete("/api/v1/behavior-trees/check").status_code == 200
+    assert client.get("/api/v1/behavior-trees/check").status_code == 404

@@ -57,6 +57,8 @@ services:
       MAESTRO_FLEET_TLS_PRIVATE_KEY: ${MAESTRO_FLEET_TLS_PRIVATE_KEY:-}
       MAESTRO_FLEET_TLS_CLIENT_CA: ${MAESTRO_FLEET_TLS_CLIENT_CA:-}
       MAESTRO_KNOWLEDGE_DIR: /app/knowledge
+      MAESTRO_PLAN_SINGLE_SKILL: ${MAESTRO_PLAN_SINGLE_SKILL:-true}
+      MAESTRO_PLAN_MAX_TASKS: ${MAESTRO_PLAN_MAX_TASKS:-100}
     volumes:
       # Planning documents edited in the Console settings menu.
       - ${MAESTRO_KNOWLEDGE_HOST_DIR:-./knowledge}:/app/knowledge

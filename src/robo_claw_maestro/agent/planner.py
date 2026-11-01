@@ -32,6 +32,7 @@ class MissionPlanParser:
         max_tasks: int = 20,
         max_attempts: int = 3,
         max_timeout_sec: float = 3600,
+        single_skill: bool = False,
     ) -> None:
         if max_tasks < 1:
             raise ValueError("max_tasks must be positive")
@@ -41,6 +42,8 @@ class MissionPlanParser:
         self._max_tasks = max_tasks
         self._max_attempts = max_attempts
         self._max_timeout = max_timeout_sec
+        # Single-skill plans map one task to one skill call, so they convert directly to BT leaves.
+        self.single_skill = single_skill
 
     @traceable(
         run_type="chain",
@@ -55,6 +58,8 @@ class MissionPlanParser:
         goal: str,
         created_by: str,
         mission_id: str | None = None,
+        available_capabilities: set[str] | None = None,
+        known_robot_ids: set[str] | None = None,
     ) -> Mission:
         data = self._decode(response)
         raw_tasks = data.get("tasks")
@@ -69,14 +74,45 @@ class MissionPlanParser:
             created_by=created_by,
             summary=str(data.get("summary", "")),
         )
-        capabilities = _resolve(self._capabilities)
-        robots = _resolve(self._robots)
+        resolved_capabilities, resolved_robots = self.resolve_sources()
+        capabilities = (
+            resolved_capabilities if available_capabilities is None else available_capabilities
+        )
+        robots = resolved_robots if known_robot_ids is None else known_robot_ids
         tasks = [self._task(item, identity, capabilities, robots) for item in raw_tasks]
         try:
             mission.add_tasks(tasks)
         except (InvalidMissionPlan, ValueError) as exc:
             raise PlanValidationError(str(exc)) from exc
         return mission
+
+    def metadata(self, response: str) -> tuple[dict[str, float | int] | None, dict[str, str]]:
+        """Return the plan-level ``repeat`` setting and each task's ``on_failure`` policy.
+
+        These fields shape the behavior tree but are not part of the Task domain model.
+        """
+        data = self._decode(response)
+        repeat = data.get("repeat")
+        if repeat is not None:
+            if not isinstance(repeat, dict):
+                raise PlanValidationError("repeat must be an object")
+            try:
+                interval = float(repeat.get("interval_sec", 0))
+                cycles = int(repeat.get("max_cycles", 0))
+            except (TypeError, ValueError) as exc:
+                raise PlanValidationError("repeat fields must be numeric") from exc
+            if interval <= 0 or cycles < 0:
+                raise PlanValidationError("repeat needs interval_sec > 0 and max_cycles >= 0")
+            repeat = {"interval_sec": interval, "max_cycles": cycles}
+        policies = {
+            str(item.get("task_id", "")).strip(): str(item.get("on_failure", "abort"))
+            for item in data.get("tasks", [])
+            if isinstance(item, dict)
+        }
+        return repeat, policies
+
+    def resolve_sources(self) -> tuple[set[str], set[str]]:
+        return _resolve(self._capabilities), _resolve(self._robots)
 
     @staticmethod
     @traceable(
@@ -115,31 +151,54 @@ class MissionPlanParser:
         task_id = str(item.get("task_id", "")).strip()
         instruction = str(item.get("instruction", "")).strip()
         required = {str(value) for value in item.get("required_capabilities", [])}
+        skill_name = str(item.get("skill_name", "")).strip()
+        if self.single_skill:
+            if not skill_name:
+                raise PlanValidationError(f"task {task_id!r} must call exactly one skill_name")
+            if required - {skill_name}:
+                raise PlanValidationError(
+                    f"task {task_id!r} must require only its skill_name {skill_name!r}"
+                )
+            required = {skill_name}
+            if str(item.get("on_failure", "abort")) not in {"abort", "continue"}:
+                raise PlanValidationError(f"on_failure must be abort or continue in {task_id!r}")
         unknown = required - capabilities
         if unknown:
             raise PlanValidationError(f"unknown capabilities: {sorted(unknown)}")
         preferred_robot = str(item.get("preferred_robot_id", "")).strip()
         if preferred_robot and robots and preferred_robot not in robots:
             raise PlanValidationError(f"unknown robot: {preferred_robot}")
-        attempts = int(item.get("max_attempts", 1))
-        timeout = float(item.get("timeout_sec", 300))
+        try:
+            attempts = int(item.get("max_attempts", 1))
+            timeout = float(item.get("timeout_sec", 300))
+            priority = int(item.get("priority", 0))
+        except (TypeError, ValueError) as exc:
+            raise PlanValidationError(f"invalid numeric field in task {task_id!r}") from exc
         if not 1 <= attempts <= self._max_attempts:
             raise PlanValidationError("task retry budget exceeds policy")
         if not 0 < timeout <= self._max_timeout:
             raise PlanValidationError("task timeout exceeds policy")
-        params = dict(item.get("params", {}))
+        raw_params = item.get("params", {})
+        if not isinstance(raw_params, dict):
+            raise PlanValidationError(f"params must be an object in task {task_id!r}")
+        params = dict(raw_params)
         if preferred_robot:
             params["preferred_robot_id"] = preferred_robot
-        return Task(
-            task_id=task_id,
-            mission_id=mission_id,
-            instruction=instruction,
-            task_type=str(item.get("task_type", "instruction")),
-            skill_name=str(item.get("skill_name", "")),
-            params=params,
-            required_capabilities=required,
-            depends_on={str(value) for value in item.get("depends_on", [])},
-            priority=int(item.get("priority", 0)),
-            timeout_sec=timeout,
-            max_attempts=attempts,
-        )
+        try:
+            return Task(
+                task_id=task_id,
+                mission_id=mission_id,
+                instruction=instruction,
+                task_type="skill"
+                if self.single_skill
+                else str(item.get("task_type", "instruction")),
+                skill_name=skill_name,
+                params=params,
+                required_capabilities=required,
+                depends_on={str(value) for value in item.get("depends_on", [])},
+                priority=priority,
+                timeout_sec=timeout,
+                max_attempts=attempts,
+            )
+        except ValueError as exc:
+            raise PlanValidationError(str(exc)) from exc
