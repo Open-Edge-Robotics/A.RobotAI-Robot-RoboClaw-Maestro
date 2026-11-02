@@ -30,6 +30,16 @@ if TYPE_CHECKING:
     from .reconciliation import ReconciliationResult, ReconciliationService
 
 
+_FINISHED_MISSION_STATUSES = frozenset(
+    {
+        MissionStatus.SUCCEEDED,
+        MissionStatus.PARTIALLY_SUCCEEDED,
+        MissionStatus.FAILED,
+        MissionStatus.CANCELLED,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SchedulingRound:
     assignments: tuple[Assignment, ...]
@@ -146,6 +156,10 @@ class MissionOrchestrator:
     @traceable(run_type="chain", name="mission_cancel", process_inputs=process_inputs)
     def cancel(self, mission_id: str) -> Mission:
         mission = self.get(mission_id)
+        if mission.status in _FINISHED_MISSION_STATUSES:
+            # Cancelling a finished mission is a no-op so a repeated console click
+            # returns the current state instead of a 409 transition error.
+            return mission
         mission.transition_to(MissionStatus.CANCEL_REQUESTED)
         active = {
             TaskStatus.ASSIGNED,

@@ -53,6 +53,34 @@ type FleetEvent = {
 
 const EVENT_REFRESH_INTERVAL_MS = 1000;
 
+const FINISHED_MISSION_STATUSES = new Set([
+  "SUCCEEDED",
+  "PARTIALLY_SUCCEEDED",
+  "FAILED",
+  "CANCELLED"
+]);
+
+// Mirrors the orchestrator state machine so the console never posts a transition
+// the backend will reject with 409.
+function missionActions(status: string) {
+  const finished = FINISHED_MISSION_STATUSES.has(status);
+  return {
+    start: status === "DRAFT",
+    run: !finished && status !== "PAUSED" && status !== "CANCEL_REQUESTED",
+    pause: status === "READY" || status === "RUNNING",
+    resume: status === "PAUSED",
+    cancel: !finished
+  };
+}
+
+function toMission(payload: unknown): Mission | null {
+  const candidate = payload as { mission_id?: unknown; mission?: unknown } | null;
+  const mission = (candidate && "mission" in candidate ? candidate.mission : candidate) as
+    | Mission
+    | null;
+  return mission && typeof mission.mission_id === "string" ? mission : null;
+}
+
 function App() {
   const [robots, setRobots] = useState<Robot[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -76,13 +104,29 @@ function App() {
     if (token) headers.set("Authorization", `Bearer ${token}`);
     if (init.body) headers.set("Content-Type", "application/json");
     const response = await fetch(path, { ...init, headers });
-    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+    if (!response.ok) {
+      const body = await response.text();
+      let detail = body;
+      try {
+        const parsed = JSON.parse(body) as { detail?: unknown };
+        if (typeof parsed.detail === "string") detail = parsed.detail;
+      } catch {
+        // keep the raw response body
+      }
+      throw new Error(`${response.status}: ${detail}`);
+    }
     return response.json();
   }, [token]);
 
   const refreshing = useRef(false);
+  const refreshQueued = useRef(false);
   const refresh = useCallback(async () => {
-    if (refreshing.current) return;
+    if (refreshing.current) {
+      // Queue instead of dropping: a dropped refresh left the mission card stale
+      // right after a control action until the next poll.
+      refreshQueued.current = true;
+      return;
+    }
     refreshing.current = true;
     try {
       const [nextRobots, nextMissions, nextApprovals] = await Promise.all([
@@ -98,6 +142,10 @@ function App() {
       setError(String(cause));
     } finally {
       refreshing.current = false;
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     }
   }, [request]);
 
@@ -170,8 +218,20 @@ function App() {
     catch (cause) { setError(String(cause)); }
   }
 
+  function applyMission(payload: unknown) {
+    const mission = toMission(payload);
+    if (!mission) return;
+    setMissions((current) => current.some((item) => item.mission_id === mission.mission_id)
+      ? current.map((item) => (item.mission_id === mission.mission_id ? { ...item, ...mission } : item))
+      : [mission, ...current]);
+  }
+
   async function missionAction(missionId: string, action: "start" | "pause" | "resume" | "cancel" | "run") {
-    try { await request(`/api/v1/missions/${missionId}/${action}`, { method: "POST" }); await refresh(); }
+    try {
+      const result = await request(`/api/v1/missions/${missionId}/${action}`, { method: "POST" });
+      applyMission(result);
+      await refresh();
+    }
     catch (cause) { setError(String(cause)); }
   }
 
@@ -251,7 +311,16 @@ function App() {
         <div className="mission-list">{missions.map((mission) => <article className="card mission" key={mission.mission_id}>
           <div className="card-title"><h3>{mission.goal}</h3><span className="state">{mission.status}</span></div>
           <small>{mission.mission_id} · plan v{mission.plan_version}</small>
-          <div className="card-actions"><button onClick={() => void missionAction(mission.mission_id, "start")}>시작</button><button onClick={() => void missionAction(mission.mission_id, "run")}>1회 실행</button><button onClick={() => void missionAction(mission.mission_id, mission.status === "PAUSED" ? "resume" : "pause")}>{mission.status === "PAUSED" ? "재개" : "일시정지"}</button><button className="danger ghost" onClick={() => void missionAction(mission.mission_id, "cancel")}>취소</button></div>
+          <div className="card-actions">{(() => {
+            const allowed = missionActions(mission.status);
+            const paused = mission.status === "PAUSED";
+            return <>
+              <button disabled={!allowed.start} onClick={() => void missionAction(mission.mission_id, "start")}>시작</button>
+              <button disabled={!allowed.run} onClick={() => void missionAction(mission.mission_id, "run")}>1회 실행</button>
+              <button disabled={paused ? !allowed.resume : !allowed.pause} onClick={() => void missionAction(mission.mission_id, paused ? "resume" : "pause")}>{paused ? "재개" : "일시정지"}</button>
+              <button className="danger ghost" disabled={!allowed.cancel} onClick={() => void missionAction(mission.mission_id, "cancel")}>취소</button>
+            </>;
+          })()}</div>
           <div className="dag">{mission.tasks.map((task) => <div className="task" key={task.task_id}>
             <strong>{task.task_id}</strong><span>{task.status}</span><p>{task.instruction}</p><small>robot: {task.assigned_robot_id ?? "미배정"} · deps: {task.depends_on.join(", ") || "없음"}</small>
           </div>)}</div>

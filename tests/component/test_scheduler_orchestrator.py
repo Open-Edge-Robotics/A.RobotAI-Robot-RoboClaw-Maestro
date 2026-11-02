@@ -98,6 +98,35 @@ def test_mission_lifecycle_pause_resume_and_cancel():
     assert mission.tasks["t1"].status is TaskStatus.CANCELLED
 
 
+def test_cancel_is_idempotent_for_finished_missions():
+    orchestrator, _ = make_orchestrator()
+    mission = Mission("m1", "inspect")
+    mission.add_task(Task("t1", "m1", "inspect"))
+    orchestrator.create(mission)
+
+    assert orchestrator.cancel("m1").status is MissionStatus.CANCELLED
+    event_count = len(orchestrator.events.list("m1"))
+
+    repeated = orchestrator.cancel("m1")
+
+    assert repeated.status is MissionStatus.CANCELLED
+    assert mission.tasks["t1"].status is TaskStatus.CANCELLED
+    assert len(orchestrator.events.list("m1")) == event_count
+
+
+def test_cancel_after_mission_succeeded_keeps_succeeded_state():
+    orchestrator, _ = make_orchestrator()
+    mission = Mission("m1", "inspect")
+    task = Task("t1", "m1", "inspect", required_capabilities={"inspect"})
+    mission.add_task(task)
+    orchestrator.create(mission)
+    completed = asyncio.run(orchestrator.run_until_settled("m1"))
+    assert completed.status is MissionStatus.SUCCEEDED
+
+    assert orchestrator.cancel("m1").status is MissionStatus.SUCCEEDED
+    assert task.status is TaskStatus.SUCCEEDED
+
+
 def test_elapsed_deadline_prevents_dispatch():
     orchestrator, gateway = make_orchestrator()
     mission = Mission("m1", "inspect")

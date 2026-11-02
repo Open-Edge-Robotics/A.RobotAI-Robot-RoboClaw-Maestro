@@ -325,3 +325,25 @@ def test_behavior_tree_endpoints():
     assert client.put("/api/v1/behavior-trees/Bad Name", json={"document": {}}).status_code == 422
     assert client.delete("/api/v1/behavior-trees/check").status_code == 200
     assert client.get("/api/v1/behavior-trees/check").status_code == 404
+
+
+def test_repeated_mission_cancel_is_idempotent():
+    client = make_client()
+    created = client.post(
+        "/api/v1/missions",
+        json={
+            "mission_id": "m-cancel",
+            "goal": "inspect",
+            "tasks": [{"task_id": "t1", "instruction": "inspect"}],
+        },
+    )
+    assert created.status_code == 200
+
+    first = client.post("/api/v1/missions/m-cancel/cancel")
+    second = client.post("/api/v1/missions/m-cancel/cancel")
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "CANCELLED"
+    assert second.status_code == 200
+    assert second.json()["status"] == "CANCELLED"
+    assert [task["status"] for task in second.json()["tasks"]] == ["CANCELLED"]
