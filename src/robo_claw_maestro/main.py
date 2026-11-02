@@ -184,6 +184,7 @@ def build_app():
         metrics=metrics,
         control_rate_limit_per_minute=settings.control_rate_limit_per_minute,
         event_retention_days=settings.event_retention_days,
+        event_stream_replay_limit=settings.event_stream_replay_limit,
         approval_service=approval_service,
         knowledge=knowledge,
         behavior_trees=BehaviorTreeStore(Path(settings.knowledge_dir) / "behavior_trees"),

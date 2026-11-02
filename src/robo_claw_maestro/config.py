@@ -39,6 +39,7 @@ class Settings:
     control_rate_limit_per_minute: int = 120
     log_level: str = "INFO"
     event_retention_days: int = 30
+    event_stream_replay_limit: int = 200
     auto_create_schema: bool = True
     knowledge_dir: str = "knowledge"
     plan_single_skill: bool = True
@@ -105,6 +106,9 @@ class Settings:
         retention_days = int(os.getenv("MAESTRO_EVENT_RETENTION_DAYS", "30"))
         if retention_days < 1:
             raise ValueError("MAESTRO_EVENT_RETENTION_DAYS must be positive")
+        replay_limit = int(os.getenv("MAESTRO_EVENT_STREAM_REPLAY_LIMIT", "200"))
+        if replay_limit < 0:
+            raise ValueError("MAESTRO_EVENT_STREAM_REPLAY_LIMIT must not be negative")
         return cls(
             database_url=database_url,
             host=os.getenv("MAESTRO_HOST", "0.0.0.0"),
@@ -138,6 +142,7 @@ class Settings:
             control_rate_limit_per_minute=rate_limit,
             log_level=os.getenv("MAESTRO_LOG_LEVEL", "INFO"),
             event_retention_days=retention_days,
+            event_stream_replay_limit=replay_limit,
             auto_create_schema=auto_create_schema,
             knowledge_dir=os.getenv("MAESTRO_KNOWLEDGE_DIR", "knowledge"),
             plan_single_skill=os.getenv("MAESTRO_PLAN_SINGLE_SKILL", "true").lower()

@@ -76,6 +76,36 @@ def test_websocket_replays_fleet_events():
         websocket.close()
 
 
+def test_websocket_replays_only_the_bounded_tail_of_history():
+    from robo_claw_maestro.domain.robot import Robot
+
+    gateway = FakeRobotGateway()
+    registry = RobotRegistry(gateway)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    for index in range(6):
+        registry.register(Robot(f"r{index}", f"Robot {index}"))
+    client = TestClient(create_app(registry, orchestrator, event_stream_replay_limit=2))
+
+    with client.websocket_connect("/api/v1/events/stream") as websocket:
+        replayed = [websocket.receive_json(), websocket.receive_json()]
+        websocket.close()
+
+    assert [event["aggregate_id"] for event in replayed] == ["r4", "r5"]
+
+
+def test_websocket_replay_limit_zero_skips_history():
+    from robo_claw_maestro.domain.robot import Robot
+
+    gateway = FakeRobotGateway()
+    registry = RobotRegistry(gateway)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    registry.register(Robot("r0", "Robot 0"))
+    client = TestClient(create_app(registry, orchestrator, event_stream_replay_limit=0))
+
+    with client.websocket_connect("/api/v1/events/stream") as websocket:
+        websocket.close()
+
+
 def test_goal_endpoint_creates_only_validated_mission():
     gateway = FakeRobotGateway()
     registry = RobotRegistry(gateway)

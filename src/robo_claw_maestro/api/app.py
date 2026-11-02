@@ -25,6 +25,7 @@ from robo_claw_maestro.agent.maestro_agent import (
     ReplanningBudgetExceeded,
 )
 from robo_claw_maestro.agent.planner import PlanValidationError
+from robo_claw_maestro.api.event_stream import EventStreamFeed
 from robo_claw_maestro.application.approval_service import ApprovalService
 from robo_claw_maestro.application.mission_orchestrator import MissionOrchestrator
 from robo_claw_maestro.application.robot_monitor import RobotMonitor
@@ -121,6 +122,7 @@ def create_app(
     metrics: MaestroMetrics | None = None,
     control_rate_limit_per_minute: int = 120,
     event_retention_days: int = 30,
+    event_stream_replay_limit: int = 200,
     approval_service: ApprovalService | None = None,
     knowledge: KnowledgeBase | None = None,
     behavior_trees: BehaviorTreeStore | None = None,
@@ -134,6 +136,8 @@ def create_app(
         raise ValueError("control_rate_limit_per_minute must be positive")
     if event_retention_days < 1:
         raise ValueError("event_retention_days must be positive")
+    if event_stream_replay_limit < 0:
+        raise ValueError("event_stream_replay_limit must not be negative")
     try:
         from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
         from fastapi.responses import JSONResponse
@@ -736,14 +740,16 @@ def create_app(
                 return
         await websocket.accept()
         metrics.websocket_clients.inc()
-        sent: set[str] = set()
+        feed = EventStreamFeed(
+            (registry.events, orchestrator.events),
+            replay_limit=event_stream_replay_limit,
+        )
         try:
+            for event in feed.replay():
+                await websocket.send_json(_event_json(event))
             while True:
-                events = registry.events.list() + orchestrator.events.list()
-                for event in sorted(events, key=lambda item: (item.occurred_at, item.event_id)):
-                    if event.event_id not in sent:
-                        await websocket.send_json(_event_json(event))
-                        sent.add(event.event_id)
+                for event in feed.poll():
+                    await websocket.send_json(_event_json(event))
                 await asyncio.sleep(0.25)
         except WebSocketDisconnect:
             return

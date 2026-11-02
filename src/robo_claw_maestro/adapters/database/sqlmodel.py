@@ -261,6 +261,29 @@ class SqlModelStore:
             records = list(session.exec(statement))
         return [_event_from_json(item.payload_json) for item in records]
 
+    def events_after(
+        self,
+        since: tuple[datetime, str] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[DomainEvent]:
+        """Return events newer than ``since``, newest ``limit`` kept when bounded."""
+        statement = select(EventRecord).order_by(
+            EventRecord.occurred_at.desc(), EventRecord.event_id.desc()
+        )
+        if since is not None:
+            since_time = since[0] if since[0].tzinfo is not None else since[0].replace(tzinfo=UTC)
+            statement = statement.where(EventRecord.occurred_at >= since_time)
+        if limit is not None:
+            statement = statement.limit(limit)
+        with Session(self.engine) as session:
+            records = list(session.exec(statement))
+        return [
+            event
+            for event in (_event_from_json(item.payload_json) for item in reversed(records))
+            if since is None or (event.occurred_at, event.event_id) > since
+        ]
+
     @staticmethod
     def _record(value: Mission | Robot) -> MissionRecord | RobotRecord:
         if isinstance(value, Mission):
@@ -460,6 +483,14 @@ class SqlModelEventRepository:
 
     def list(self, aggregate_id: str | None = None) -> list[DomainEvent]:
         return self.store.events(aggregate_id)
+
+    def events_after(
+        self,
+        since: tuple[datetime, str] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[DomainEvent]:
+        return self.store.events_after(since, limit=limit)
 
     def delete_before(self, before: datetime) -> int:
         with Session(self.store.engine) as session:

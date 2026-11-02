@@ -12,6 +12,7 @@ from robo_claw_maestro.application.robot_registry import RobotRegistry
 from robo_claw_maestro.application.scheduler import FleetScheduler
 from robo_claw_maestro.application.task_dispatcher import TaskDispatcher
 from robo_claw_maestro.domain.command import Command
+from robo_claw_maestro.domain.event import DomainEvent
 from robo_claw_maestro.domain.mission import Mission
 from robo_claw_maestro.domain.robot import Robot, RobotConnectionState
 from robo_claw_maestro.domain.task import Task
@@ -68,4 +69,23 @@ def test_mission_repository_and_event_repository_are_reusable():
         "task.status_changed",
         "task.status_changed",
         "task.dispatched",
+    ]
+
+
+def test_event_repository_reads_bounded_and_incremental_slices():
+    events = InMemoryEventRepository()
+    first = DomainEvent.create(
+        event_type="robot.registered", aggregate_type="robot", aggregate_id="r1"
+    )
+    second = DomainEvent.create(
+        event_type="robot.telemetry_updated", aggregate_type="robot", aggregate_id="r1"
+    )
+    events.append(first)
+    events.append(second)
+
+    assert [event.event_id for event in events.events_after(None, limit=1)] == [second.event_id]
+    assert events.events_after((second.occurred_at, second.event_id)) == []
+    assert [event.event_id for event in events.events_after(None)] == [
+        first.event_id,
+        second.event_id,
     ]

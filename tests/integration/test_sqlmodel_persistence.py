@@ -122,3 +122,28 @@ def test_duplicate_aggregate_rolls_back(tmp_path):
         repository.add(Robot("r1", "Duplicate"))
 
     assert repository.get("r1").display_name == "Robot One"
+
+
+def test_event_repository_reads_bounded_tail_and_incremental_slice(tmp_path):
+    store = make_store(tmp_path / "maestro.db")
+    repository = SqlModelEventRepository(store)
+    events = [
+        DomainEvent.create(
+            event_type="robot.telemetry_updated",
+            aggregate_type="robot",
+            aggregate_id="r1",
+            payload={"index": index},
+        )
+        for index in range(5)
+    ]
+    for event in events:
+        repository.append(event)
+
+    tail = repository.events_after(None, limit=2)
+
+    assert [event.payload["index"] for event in tail] == [3, 4]
+    assert repository.events_after((tail[-1].occurred_at, tail[-1].event_id)) == []
+
+    newer = repository.events_after((events[0].occurred_at, events[0].event_id))
+
+    assert [event.payload["index"] for event in newer] == [1, 2, 3, 4]

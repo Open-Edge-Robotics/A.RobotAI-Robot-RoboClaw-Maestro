@@ -1,4 +1,4 @@
-import React, { FormEvent, useCallback, useEffect, useState } from "react";
+import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BehaviorTree, type TreeSeed } from "./BehaviorTree";
 import { type DryRunResult, Settings } from "./Settings";
@@ -51,6 +51,8 @@ type FleetEvent = {
   payload: Record<string, unknown>;
 };
 
+const EVENT_REFRESH_INTERVAL_MS = 1000;
+
 function App() {
   const [robots, setRobots] = useState<Robot[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -78,7 +80,10 @@ function App() {
     return response.json();
   }, [token]);
 
+  const refreshing = useRef(false);
   const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
     try {
       const [nextRobots, nextMissions, nextApprovals] = await Promise.all([
         request("/api/v1/robots"),
@@ -91,8 +96,29 @@ function App() {
       setError("");
     } catch (cause) {
       setError(String(cause));
+    } finally {
+      refreshing.current = false;
     }
   }, [request]);
+
+  // Telemetry arrives many times per second; coalesce refreshes so the browser
+  // never queues thousands of requests behind the event stream.
+  const lastEventRefresh = useRef(0);
+  const pendingRefresh = useRef<number | null>(null);
+  const scheduleRefresh = useCallback(() => {
+    if (pendingRefresh.current !== null) return;
+    const elapsed = Date.now() - lastEventRefresh.current;
+    const delay = Math.max(0, EVENT_REFRESH_INTERVAL_MS - elapsed);
+    pendingRefresh.current = window.setTimeout(() => {
+      pendingRefresh.current = null;
+      lastEventRefresh.current = Date.now();
+      void refresh();
+    }, delay);
+  }, [refresh]);
+
+  useEffect(() => () => {
+    if (pendingRefresh.current !== null) window.clearTimeout(pendingRefresh.current);
+  }, []);
 
   useEffect(() => { void refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, [refresh]);
   useEffect(() => {
@@ -102,10 +128,10 @@ function App() {
     socket.onmessage = (message) => {
       const event = JSON.parse(message.data) as FleetEvent;
       setEvents((current) => [event, ...current.filter((item) => item.event_id !== event.event_id)].slice(0, 100));
-      void refresh();
+      scheduleRefresh();
     };
     return () => socket.close();
-  }, [token, refresh]);
+  }, [token, scheduleRefresh]);
 
   async function submitGoal(event: FormEvent) {
     event.preventDefault();

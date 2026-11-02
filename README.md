@@ -409,6 +409,7 @@ Prometheus 형식으로 연결 Robot, WebSocket client, reconnect, Task 결과, 
 ```bash
 export MAESTRO_CONTROL_RATE_LIMIT_PER_MINUTE=120
 export MAESTRO_EVENT_RETENTION_DAYS=30
+export MAESTRO_EVENT_STREAM_REPLAY_LIMIT=200
 export MAESTRO_LOG_LEVEL=INFO
 ```
 

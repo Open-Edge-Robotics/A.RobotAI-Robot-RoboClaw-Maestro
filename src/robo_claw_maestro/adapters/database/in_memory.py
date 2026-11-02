@@ -104,6 +104,20 @@ class InMemoryEventRepository:
             return list(self._events)
         return [event for event in self._events if event.aggregate_id == aggregate_id]
 
+    def events_after(
+        self,
+        since: tuple[datetime, str] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[DomainEvent]:
+        events = [
+            event
+            for event in self._events
+            if since is None or (event.occurred_at, event.event_id) > since
+        ]
+        events.sort(key=lambda item: (item.occurred_at, item.event_id))
+        return events[-limit:] if limit is not None else events
+
     def delete_before(self, before: datetime) -> int:
         retained = [event for event in self._events if event.occurred_at >= before]
         deleted = len(self._events) - len(retained)
