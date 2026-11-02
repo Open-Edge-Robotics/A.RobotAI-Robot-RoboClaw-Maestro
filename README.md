@@ -80,7 +80,7 @@ export AZURE_OPENAI_API_VERSION=2024-10-21
 
 `MAESTRO_LLM_PROVIDER`를 비워두면 LLM planning만 비활성화되고 Robot 관리, 직접 Mission과 emergency stop은 계속 동작합니다.
 
-Planner는 goal 요청마다 Robot registry를 조회해 등록된 Robot의 `robot_id`, type, 연결 상태, site/map, capability 목록을 fleet catalog로 LLM prompt에 포함하고, 같은 목록으로 계획을 검증합니다. FleetControl Robot은 연결 시 `SKILLS.md` 기반 capability를 직접 보고하므로 Robot별 capability를 Maestro에 수동 등록할 필요가 없고, Maestro 재시작 없이 새 Robot이 planning에 반영됩니다. `MAESTRO_ROBOTS_JSON`의 `capabilities`는 정적 RosGrpc Robot용 보조 입력으로만 합산됩니다. Provider별 전체 설정은 [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)을 참고합니다.
+Planner는 goal 요청마다 Robot registry를 조회해 등록된 Robot의 `robot_id`, type, 연결 상태, site/map, capability 목록을 fleet catalog로 LLM prompt에 포함하고, 같은 목록으로 계획을 검증합니다. FleetControl Robot은 연결 시 `SKILLS.md` 기반 capability를 직접 보고하므로 Robot별 capability를 Maestro에 수동 등록할 필요가 없고, Maestro 재시작 없이 새 Robot이 planning에 반영됩니다. `MAESTRO_ROBOTS_JSON`의 `capabilities`는 정적 RosGrpc Robot용 보조 입력으로만 합산됩니다. 등록 payload에 capability가 없어 아무것도 보고하지 않는 Robot은 `robots.md` 프로필의 `capabilities`로 보완되며, prompt·계획 검증·Dry-run이 같은 capability 목록을 사용합니다. Provider별 전체 설정은 [Maestro LLM Provider 설정](docs/LLM_PROVIDERS.md)을 참고합니다.
 
 ## 검증 지점 1: 정적 검사와 전체 자동 테스트
 

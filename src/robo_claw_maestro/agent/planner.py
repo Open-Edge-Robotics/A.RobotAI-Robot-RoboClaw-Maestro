@@ -63,8 +63,15 @@ class MissionPlanParser:
     ) -> Mission:
         data = self._decode(response)
         raw_tasks = data.get("tasks")
-        if not isinstance(raw_tasks, list) or not raw_tasks:
-            raise PlanValidationError("plan must contain a non-empty tasks array")
+        if not isinstance(raw_tasks, list):
+            raise PlanValidationError(
+                "plan must contain a tasks array; the planner returned no task list"
+            )
+        if not raw_tasks:
+            raise PlanValidationError(
+                "plan contains no tasks: no robot in the fleet catalog reports the capabilities "
+                "this goal needs, or the planner declined the goal"
+            )
         if len(raw_tasks) > self._max_tasks:
             raise PlanValidationError(f"plan exceeds maximum task count: {self._max_tasks}")
         identity = mission_id or f"mission-{uuid4().hex}"

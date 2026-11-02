@@ -23,6 +23,11 @@ from robo_claw_maestro.adapters.grpc.fleet_control_server import (
 from robo_claw_maestro.adapters.grpc.multi_robot import MultiRobotGateway
 from robo_claw_maestro.adapters.llm.factory import build_llm_provider
 from robo_claw_maestro.agent.behavior_tree import BehaviorTreeStore
+from robo_claw_maestro.agent.fleet_view import (
+    fleet_capabilities,
+    fleet_catalog,
+    profile_capabilities,
+)
 from robo_claw_maestro.agent.knowledge import KnowledgeBase
 from robo_claw_maestro.agent.maestro_agent import MaestroAgent
 from robo_claw_maestro.agent.planner import MissionPlanParser
@@ -127,37 +132,32 @@ def build_app():
         }
 
         # Robots report capabilities on FleetControl registration, so read the registry live.
-        def fleet_capabilities() -> set[str]:
-            return static_capabilities | {
-                name for robot in registry.list() for name in robot.capabilities
-            }
+        # A robot that registers without capabilities falls back to its robots.md profile, so
+        # the prompt, the validator, and the dry-run describe the same fleet.
+        def profile_capability_map() -> dict[str, set[str]]:
+            return profile_capabilities(knowledge.robot_profiles())
+
+        def current_capabilities() -> set[str]:
+            return fleet_capabilities(
+                registry.list(), profile_capability_map(), static=static_capabilities
+            )
 
         def fleet_robot_ids() -> set[str]:
             return set(endpoints) | {robot.robot_id for robot in registry.list()}
 
-        def fleet_catalog() -> list[dict[str, object]]:
-            return [
-                {
-                    "robot_id": robot.robot_id,
-                    "robot_type": robot.robot_type,
-                    "connection_state": str(robot.connection_state),
-                    "site_id": robot.site_id,
-                    "map_id": robot.map_id,
-                    "capabilities": sorted(robot.capabilities),
-                }
-                for robot in registry.list()
-            ]
+        def current_catalog() -> list[dict[str, object]]:
+            return fleet_catalog(registry.list(), profile_capability_map())
 
         maestro_agent = MaestroAgent(
             llm_provider,
             MissionPlanParser(
-                fleet_capabilities,
+                current_capabilities,
                 known_robot_ids=fleet_robot_ids,
                 single_skill=settings.plan_single_skill,
                 max_tasks=settings.plan_max_tasks,
             ),
             timeout_sec=settings.llm_timeout_sec,
-            fleet_catalog=fleet_catalog,
+            fleet_catalog=current_catalog,
             knowledge=knowledge,
         )
     fleet_server = None

@@ -41,6 +41,18 @@ def test_invalid_plan_is_rejected(response):
         parser().parse(response, goal="inspect", created_by="operator")
 
 
+def test_empty_task_list_explains_missing_capabilities():
+    with pytest.raises(PlanValidationError, match="no robot in the fleet catalog"):
+        parser().parse(
+            '{"summary": "no capable robot", "tasks": []}',
+            goal="inspect",
+            created_by="operator",
+        )
+
+    with pytest.raises(PlanValidationError, match="tasks array"):
+        parser().parse('{"summary": "no task list"}', goal="inspect", created_by="operator")
+
+
 def test_unknown_capability_and_dependency_cycle_are_rejected():
     unknown = VALID_PLAN.replace('"inspect"', '"fly"')
     with pytest.raises(PlanValidationError, match="unknown capabilities"):
