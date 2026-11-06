@@ -42,3 +42,4 @@ select { border: 1px solid #32635c; border-radius: 7px; background: #102320; col
 .bt-inspector { display: grid; gap: 12px; position: sticky; top: 12px; }.bt-form { display: grid; gap: 10px; }.bt-form label { display: grid; gap: 4px; font-size: .78rem; color: #a9c9c3; }.bt-form textarea { min-height: 110px; font: .8rem/1.4 ui-monospace, monospace; }
 .bt-issues { margin: 8px 0 0; padding-left: 18px; font-size: .78rem; }.bt-json { width: 100%; box-sizing: border-box; min-height: 360px; margin-top: 10px; font: .8rem/1.4 ui-monospace, monospace; }
 @media (max-width: 960px) { .bt-layout { grid-template-columns: 1fr; } .bt-inspector { position: static; } }
+.bt-type { padding: 2px 8px; border-radius: 6px; background: #164a42; color: #9bffe0; font-size: .85em; }

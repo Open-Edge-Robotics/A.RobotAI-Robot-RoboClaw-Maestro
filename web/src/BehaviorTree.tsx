@@ -48,12 +48,25 @@ function emptyDocument(): BTDocument {
   return { goal: "", loop: { enabled: false, interval_sec: 0, max_cycles: 0 }, root: { type: "Sequence", name: "Root", children: [] } };
 }
 
-function newNode(type: string): BTNode {
-  if (COMPOSITES.includes(type)) return { type, name: type, children: [], ...(type === "Parallel" ? { success_count: 1 } : {}) };
-  if (type === "Action") return { type, name: "action", robot_id: "", skill: "", params: {}, timeout_sec: 300, max_attempts: 1 };
-  if (type === "Condition") return { type, name: "battery", condition: "CheckBatterySufficient", robot_id: "", params: { min_pct: 20 } };
-  if (type === "SleepBetweenCycles") return { type, name: type, interval_sec: 60 };
-  return { type, name: type };
+function collectNames(node: BTNode, names: Set<string>): Set<string> {
+  if (node.name) names.add(node.name);
+  for (const child of node.children ?? []) collectNames(child, names);
+  return names;
+}
+
+// New nodes get a numbered name unique in the tree (e.g. parallel-1, action-2) so the
+// inspector never shows a name that merely repeats the node type.
+function newNode(type: string, root: BTNode): BTNode {
+  const used = collectNames(root, new Set());
+  const base = type === "SleepBetweenCycles" ? "sleep" : type === "AlwaysSuccess" ? "success" : type.toLowerCase();
+  let index = 1;
+  while (used.has(`${base}-${index}`)) index += 1;
+  const name = `${base}-${index}`;
+  if (COMPOSITES.includes(type)) return { type, name, children: [], ...(type === "Parallel" ? { success_count: 1 } : {}) };
+  if (type === "Action") return { type, name, robot_id: "", skill: "", params: {}, timeout_sec: 300, max_attempts: 1 };
+  if (type === "Condition") return { type, name, condition: "CheckBatterySufficient", robot_id: "", params: { min_pct: 20 } };
+  if (type === "SleepBetweenCycles") return { type, name, interval_sec: 60 };
+  return { type, name };
 }
 
 function nodeAt(root: BTNode, path: number[]): BTNode | undefined {
@@ -150,7 +163,7 @@ export function BehaviorTree({ request, seed, onSeedConsumed }: Props) {
     const node = nodeAt(doc.root, selected);
     if (!node || !COMPOSITES.includes(node.type)) return;
     const index = node.children?.length ?? 0;
-    editNode((current) => ({ ...current, children: [...(current.children ?? []), newNode(addType)] }));
+    editNode((current) => ({ ...current, children: [...(current.children ?? []), newNode(addType, doc.root)] }));
     setSelected([...selected, index]);
   }
 
@@ -280,7 +293,7 @@ export function BehaviorTree({ request, seed, onSeedConsumed }: Props) {
         <ul className="bt-tree">{renderNode(doc.root, [])}</ul>
       </div>
       <div className="card bt-inspector">
-        <h3>선택 노드: {current ? `${current.type} ${current.name ?? ""}` : "-"}</h3>
+        <h3>선택 노드: {current ? <><span className="bt-type">{current.type}</span> · 이름: {current.name || "(없음)"}</> : "-"}</h3>
         {current && <>
           <div className="bt-actions">
             {COMPOSITES.includes(current.type) && <>
