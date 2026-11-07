@@ -1,6 +1,7 @@
 import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BehaviorTree, type TreeSeed } from "./BehaviorTree";
+import { CapabilityTree } from "./CapabilityTree";
 import { MissionTree } from "./MissionTree";
 import { type DryRunResult, Settings } from "./Settings";
 import "./styles.css";
@@ -340,7 +341,7 @@ function App() {
         {robots.map((robot) => <article className="card" key={robot.robot_id}>
           <div className="card-title"><h3>{robot.display_name}</h3><span className={`state ${robot.connection_state.toLowerCase()}`}>{robot.connection_state}</span></div>
           <dl><dt>상태</dt><dd>{robot.operational_state}</dd><dt>배터리</dt><dd>{robot.battery_percentage ?? "unknown"}%</dd><dt>현재 Task</dt><dd>{robot.current_task_id ?? "-"}</dd><dt>위치</dt><dd>{robot.pose ? `${robot.pose.x ?? "?"}, ${robot.pose.y ?? "?"}` : "stale/unknown"}</dd></dl>
-          <p className="capabilities">{robot.capabilities.join(" · ") || "capability 없음"}</p>
+          <CapabilityTree capabilities={robot.capabilities} />
           {robot.health_issues.length > 0 && <p className="warning">{robot.health_issues.join(", ")}</p>}
           <div className="card-actions"><button onClick={() => void runRobotTask(robot.robot_id)}>Task 실행</button><button onClick={() => void requestSnapshot(robot.robot_id)}>Snapshot</button><button className="danger ghost" onClick={() => void stopRobot(robot.robot_id)}>정지</button></div>
         </article>)}

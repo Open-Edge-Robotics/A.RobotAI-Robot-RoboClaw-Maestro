@@ -71,3 +71,16 @@ select { border: 1px solid #32635c; border-radius: 7px; background: #102320; col
 .mt-node.fail { border-left-color: #d9534f; background: #2a1517; }
 .mt-status { font-size: .72rem; padding: 1px 6px; border-radius: 999px; background: #29413e; }
 .mt-node.wait { border-left-color: #6fa8ff; background: #14213a; }
+.cap-tree { margin: 10px 0; border: 1px solid #2d4f4a; border-radius: 8px; background: #0f1d1b; font-size: .8rem; }
+.cap-tree-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid #2d4f4a; color: #9fd9cf; }
+.cap-tree-head span { flex: 1; min-width: 90px; }
+.cap-tree-head input { width: 90px; min-width: 0; padding: 3px 6px; font-size: .78rem; }
+.cap-tree-head button { padding: 3px 8px; font-size: .72rem; }
+.cap-tree-body { list-style: none; margin: 0; padding: 4px 8px 6px; max-height: 260px; overflow-y: auto; }
+.cap-tree-body details > summary { display: flex; justify-content: space-between; gap: 8px; padding: 3px 2px; cursor: pointer; }
+.cap-tree-body details > summary::marker { color: #4fd1b5; }
+.cap-group { color: #cfe5e1; }
+.cap-count { padding: 0 6px; border-radius: 999px; background: #29413e; color: #9bffe0; font-size: .72rem; }
+.cap-tree-body details ul { list-style: none; margin: 0 0 4px 6px; padding-left: 10px; border-left: 1px dashed #3a5551; }
+.cap-name { display: inline-block; padding: 1px 0; color: #8fb3ad; font-family: monospace; word-break: break-all; }
+.cap-empty { padding: 6px 2px; color: #8fb3ad; }
