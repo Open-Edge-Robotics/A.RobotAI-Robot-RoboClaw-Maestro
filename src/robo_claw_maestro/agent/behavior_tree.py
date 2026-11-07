@@ -3,8 +3,8 @@
 Node types mirror the Robo-Claw BT engine (``skills/autonomous_skill/core.py``):
 Sequence/Fallback/Parallel composites, Condition/Action leaves, ``AlwaysSuccess``
 for the ``CycleDone`` idiom, and ``SleepBetweenCycles`` for recurring loops.
-Documents are JSON and are stored, converted, and validated here; execution is
-not implemented yet.
+Documents are JSON and are stored, converted, validated, and split into per-robot
+views here. Mission trees are executed by ``application.bt_runner``.
 """
 
 from __future__ import annotations
@@ -58,6 +58,55 @@ def _action(task: dict[str, Any]) -> dict[str, Any]:
     return leaf
 
 
+def _chains(tasks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Group tasks into weakly connected dependency components, in input order."""
+    parent = {str(task["task_id"]): str(task["task_id"]) for task in tasks}
+
+    def find(item: str) -> str:
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for task in tasks:
+        for dependency in task.get("depends_on") or []:
+            if str(dependency) in parent:
+                parent[find(str(dependency))] = find(str(task["task_id"]))
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        groups.setdefault(find(str(task["task_id"])), []).append(task)
+    return list(groups.values())
+
+
+def _chain_steps(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stages: dict[int, list[dict[str, Any]]] = {}
+    for task in chain:
+        stages.setdefault(int(task.get("stage", 1)), []).append(task)
+    steps: list[dict[str, Any]] = []
+    for number in sorted(stages):
+        members = [_action(task) for task in stages[number]]
+        if len(members) == 1:
+            steps.append(members[0])
+        else:
+            steps.append(
+                {
+                    "type": "Parallel",
+                    "name": f"Stage {number}",
+                    "success_count": len(members),
+                    "children": members,
+                }
+            )
+    return steps
+
+
+def _chain_node(chain: list[dict[str, Any]]) -> dict[str, Any]:
+    steps = _chain_steps(chain)
+    if len(steps) == 1:
+        return steps[0]
+    robots = sorted({task.get("assigned_robot_id") or "?" for task in chain})
+    return {"type": "Sequence", "name": f"Chain {'+'.join(robots)}", "children": steps}
+
+
 def plan_to_tree(
     *,
     name: str,
@@ -66,24 +115,24 @@ def plan_to_tree(
     repeat: dict[str, Any] | None,
     battery_guard_pct: int | None = 20,
 ) -> dict[str, Any]:
-    """Convert dry-run tasks into a tree: one Sequence of stages, parallel within a stage."""
-    stages: dict[int, list[dict[str, Any]]] = {}
-    for task in tasks:
-        stages.setdefault(int(task.get("stage", 1)), []).append(task)
-    work: list[dict[str, Any]] = []
-    for number in sorted(stages):
-        members = [_action(task) for task in stages[number]]
-        if len(members) == 1:
-            work.append(members[0])
-        else:
-            work.append(
-                {
-                    "type": "Parallel",
-                    "name": f"Stage {number}",
-                    "success_count": len(members),
-                    "children": members,
-                }
-            )
+    """Convert dry-run tasks into a tree.
+
+    Tasks connected by ``depends_on`` form one chain: a Sequence of its stages, parallel
+    within a stage. Independent chains (for example one per robot) run side by side in a
+    Parallel, so a failure aborts only its own chain and never cancels unrelated robots.
+    """
+    chains = _chains(tasks)
+    if len(chains) == 1:
+        work = _chain_steps(chains[0])
+    else:
+        work = [
+            {
+                "type": "Parallel",
+                "name": "Independent chains",
+                "success_count": len(chains),
+                "children": [_chain_node(chain) for chain in chains],
+            }
+        ]
     robots = sorted({task.get("assigned_robot_id", "") for task in tasks} - {""})
     guards = (
         [
@@ -126,6 +175,69 @@ def plan_to_tree(
         },
         "root": {"type": "Sequence", "name": "Root", "children": children},
     }
+
+
+UNASSIGNED = "(미배정)"
+
+
+def with_paths(node: dict[str, Any], path: str = "root") -> dict[str, Any]:
+    """Return a copy where every node carries its ``path`` (``root.0.1``) for status lookup."""
+    copy = {key: value for key, value in node.items() if key != "children"}
+    copy["path"] = path
+    if isinstance(node.get("children"), list):
+        copy["children"] = [
+            with_paths(child, f"{path}.{index}") for index, child in enumerate(node["children"])
+        ]
+    return copy
+
+
+def tree_robots(node: Any) -> set[str]:
+    """Robot ids referenced by Action/Condition leaves; unassigned actions use UNASSIGNED."""
+    if not isinstance(node, dict):
+        return set()
+    found: set[str] = set()
+    if node.get("type") == "Action":
+        found.add(node.get("robot_id") or UNASSIGNED)
+    elif node.get("type") == "Condition" and node.get("robot_id"):
+        found.add(node["robot_id"])
+    for child in node.get("children") or []:
+        found |= tree_robots(child)
+    return found
+
+
+def _prune(node: dict[str, Any], robot_id: str) -> dict[str, Any] | None:
+    kind = node.get("type")
+    if kind == "Action":
+        return node if (node.get("robot_id") or UNASSIGNED) == robot_id else None
+    if kind == "Condition":
+        return node if node.get("robot_id") in {robot_id, "", None} else None
+    if kind in {"AlwaysSuccess", "SleepBetweenCycles"}:
+        return node
+    kept = [
+        pruned
+        for child in node.get("children") or []
+        if (pruned := _prune(child, robot_id)) is not None
+    ]
+    if not any(child.get("type") not in {"AlwaysSuccess", "SleepBetweenCycles"} for child in kept):
+        return None
+    return {**node, "children": kept}
+
+
+def split_by_robot(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-robot views of one fleet tree: each keeps only that robot's nodes, in order.
+
+    The views are for display; Maestro executes the full tree so cross-robot ordering
+    (a stage waiting for another robot) is preserved.
+    """
+    root = document.get("root")
+    if not isinstance(root, dict):
+        return {}
+    views = {}
+    for robot_id in sorted(tree_robots(root)):
+        pruned = _prune(root, robot_id)
+        if pruned is not None:
+            views[robot_id] = pruned
+    return views
 
 
 def validate_tree(document: dict[str, Any], robot_skills: dict[str, set[str]]) -> list[TreeIssue]:

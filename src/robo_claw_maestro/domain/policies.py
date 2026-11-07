@@ -21,6 +21,7 @@ class SchedulingSafetyPolicy:
         *,
         motion_battery_threshold: float = 20.0,
         pose_max_age_sec: float = 5.0,
+        battery_exempt_robot_ids: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         if not 0 <= motion_battery_threshold <= 100:
             raise ValueError("motion battery threshold must be between 0 and 100")
@@ -28,6 +29,8 @@ class SchedulingSafetyPolicy:
             raise ValueError("pose max age must be positive")
         self._battery_threshold = motion_battery_threshold
         self._pose_max_age = timedelta(seconds=pose_max_age_sec)
+        # Robots whose battery reading is known to be broken (operator setting).
+        self._battery_exempt = frozenset(battery_exempt_robot_ids)
 
     def evaluate(self, robot: Robot, task: Task, *, now: datetime | None = None) -> PolicyDecision:
         if robot.connection_state is not RobotConnectionState.ONLINE:
@@ -53,8 +56,13 @@ class SchedulingSafetyPolicy:
             or bool(task.required_capabilities & motion_names)
             or any(capability.risk_level in {"motion", "dangerous"} for capability in capabilities)
         )
-        if motion and (
-            robot.battery_percentage is None or robot.battery_percentage < self._battery_threshold
+        if (
+            motion
+            and robot.robot_id not in self._battery_exempt
+            and (
+                robot.battery_percentage is None
+                or robot.battery_percentage < self._battery_threshold
+            )
         ):
             return PolicyDecision(False, "battery_below_motion_threshold")
 

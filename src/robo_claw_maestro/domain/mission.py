@@ -118,6 +118,62 @@ class Mission:
             )
         )
 
+    def reopen(self, *, failed_only: bool = True) -> list[str]:
+        """Return a finished mission to READY so it can run again.
+
+        ``failed_only`` keeps SUCCEEDED tasks (the tree skips them) and resets the rest;
+        otherwise every task is reset. Returns the reset task ids.
+        """
+        finished = {
+            MissionStatus.SUCCEEDED,
+            MissionStatus.PARTIALLY_SUCCEEDED,
+            MissionStatus.FAILED,
+            MissionStatus.CANCELLED,
+        }
+        if self.status not in finished:
+            raise InvalidMissionTransition(
+                f"only a finished mission can be rerun: {self.mission_id} is {self.status}"
+            )
+        active = {
+            TaskStatus.ASSIGNED,
+            TaskStatus.ACCEPTED,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCEL_REQUESTED,
+        }
+        busy = sorted(task.task_id for task in self.tasks.values() if task.status in active)
+        if busy:
+            raise InvalidMissionTransition(f"tasks are still active on robots: {busy}")
+        rerun = int(self.constraints.get("reruns", 0) or 0) + 1
+        reset = []
+        for task in self.tasks.values():
+            if failed_only and task.status is TaskStatus.SUCCEEDED:
+                continue
+            task.reset_for_rerun(rerun)
+            reset.append(task.task_id)
+        if not reset:
+            raise InvalidMissionTransition("every task already succeeded; nothing to rerun")
+        self.constraints["reruns"] = rerun
+        previous = self.status
+        self.status = MissionStatus.READY
+        self.finished_at = None
+        self._events.append(
+            DomainEvent.create(
+                event_type="mission.reopened",
+                aggregate_type="mission",
+                aggregate_id=self.mission_id,
+                payload={
+                    "from": previous.value,
+                    "to": MissionStatus.READY.value,
+                    "rerun": rerun,
+                    "failed_only": failed_only,
+                    "reset_task_ids": sorted(reset),
+                },
+                correlation_id=self.mission_id,
+            )
+        )
+        return reset
+
     def pull_events(self) -> list[DomainEvent]:
         events, self._events = self._events, []
         return events

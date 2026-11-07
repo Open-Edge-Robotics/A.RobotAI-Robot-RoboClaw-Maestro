@@ -16,7 +16,9 @@ from robo_claw_maestro.agent.behavior_tree import (
     BehaviorTreeStore,
     UnknownTree,
     plan_to_tree,
+    split_by_robot,
     validate_tree,
+    with_paths,
 )
 from robo_claw_maestro.agent.knowledge import KnowledgeBase, KnowledgeDocument, UnknownDocument
 from robo_claw_maestro.agent.maestro_agent import (
@@ -27,6 +29,11 @@ from robo_claw_maestro.agent.maestro_agent import (
 from robo_claw_maestro.agent.planner import PlanValidationError
 from robo_claw_maestro.api.event_stream import EventStreamFeed
 from robo_claw_maestro.application.approval_service import ApprovalService
+from robo_claw_maestro.application.bt_runner import (
+    MissionTreeRunner,
+    TreeRunConflict,
+    mission_tree,
+)
 from robo_claw_maestro.application.mission_orchestrator import MissionOrchestrator
 from robo_claw_maestro.application.robot_monitor import RobotMonitor
 from robo_claw_maestro.application.robot_registry import RobotRegistry
@@ -100,6 +107,12 @@ def _document_json(document: KnowledgeDocument) -> dict[str, Any]:
     return data
 
 
+def _run_summary(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    if snapshot is None:
+        return None
+    return {key: value for key, value in snapshot.items() if key != "nodes"}
+
+
 def _mission_json(mission: Mission) -> dict[str, Any]:
     data = asdict(mission)
     data["status"] = mission.status.value
@@ -126,6 +139,7 @@ def create_app(
     approval_service: ApprovalService | None = None,
     knowledge: KnowledgeBase | None = None,
     behavior_trees: BehaviorTreeStore | None = None,
+    tree_runner: MissionTreeRunner | None = None,
 ):
     """Create the HTTP app.
 
@@ -231,12 +245,22 @@ def create_app(
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            await tree_runner.close()
             if robot_monitor is not None:
                 await robot_monitor.close()
             if fleet_started and fleet_control_server is not None:
                 await fleet_control_server.stop()
 
     metrics = metrics or MaestroMetrics()
+    tree_runner = tree_runner or MissionTreeRunner(
+        orchestrator, registry, approval_service=approval_service
+    )
+
+    def mission_view(mission: Mission) -> dict[str, Any]:
+        data = _mission_json(tree_runner.mission(mission.mission_id))
+        data["behavior_tree_run"] = _run_summary(tree_runner.snapshot(mission.mission_id))
+        return data
+
     control_requests: dict[str, deque[float]] = defaultdict(deque)
     app = FastAPI(title="Robo-Claw Maestro", version="0.1.0", lifespan=lifespan)
 
@@ -607,7 +631,8 @@ def create_app(
 
     @app.get("/api/v1/missions")
     async def missions() -> list[dict[str, Any]]:
-        return [_mission_json(mission) for mission in orchestrator.list()]
+        ordered = sorted(orchestrator.list(), key=lambda mission: mission.created_at, reverse=True)
+        return [mission_view(mission) for mission in ordered]
 
     @app.post("/api/v1/missions")
     async def create_mission(payload: MissionInput) -> dict[str, Any]:
@@ -641,9 +666,48 @@ def create_app(
     @app.get("/api/v1/missions/{mission_id}")
     async def mission(mission_id: str) -> dict[str, Any]:
         try:
-            return _mission_json(orchestrator.get(mission_id))
+            return mission_view(orchestrator.get(mission_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/missions/{mission_id}/behavior-tree")
+    async def mission_behavior_tree(mission_id: str) -> dict[str, Any]:
+        try:
+            current = tree_runner.mission(mission_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        tree = mission_tree(current)
+        annotated = {**tree, "root": with_paths(tree["root"])}
+        return {
+            "mission_id": mission_id,
+            "stored": isinstance(current.constraints.get("behavior_tree"), dict),
+            "tree": annotated,
+            "robots": split_by_robot(annotated),
+            "run": tree_runner.snapshot(mission_id),
+        }
+
+    class RerunInput(BaseModel):
+        failed_only: bool = True
+
+    @app.post("/api/v1/missions/{mission_id}/rerun")
+    async def rerun_mission(mission_id: str, payload: RerunInput) -> dict[str, Any]:
+        try:
+            run = tree_runner.rerun(mission_id, failed_only=payload.failed_only)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (TreeRunConflict, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"mission": mission_view(run.mission), "run": run.snapshot()}
+
+    @app.post("/api/v1/missions/{mission_id}/behavior-tree/run")
+    async def run_mission_behavior_tree(mission_id: str) -> dict[str, Any]:
+        try:
+            run = tree_runner.start(mission_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (TreeRunConflict, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"mission": mission_view(run.mission), "run": run.snapshot()}
 
     @app.get("/api/v1/missions/{mission_id}/events")
     async def mission_events(mission_id: str) -> list[dict[str, Any]]:
@@ -665,7 +729,9 @@ def create_app(
     @app.post("/api/v1/missions/{mission_id}/pause")
     async def pause_mission(mission_id: str) -> dict[str, Any]:
         try:
-            return _mission_json(orchestrator.pause(mission_id))
+            if tree_runner.is_running(mission_id):
+                return mission_view(tree_runner.pause(mission_id))
+            return mission_view(orchestrator.pause(mission_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -674,7 +740,9 @@ def create_app(
     @app.post("/api/v1/missions/{mission_id}/resume")
     async def resume_mission(mission_id: str) -> dict[str, Any]:
         try:
-            return _mission_json(orchestrator.resume(mission_id))
+            if tree_runner.is_running(mission_id):
+                return mission_view(tree_runner.resume(mission_id))
+            return mission_view(orchestrator.resume(mission_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -684,6 +752,8 @@ def create_app(
     async def replan_mission(mission_id: str, payload: ReplanInput) -> dict[str, Any]:
         if maestro_agent is None:
             raise HTTPException(status_code=503, detail="LLM planner is not configured")
+        if tree_runner.is_running(mission_id):
+            raise HTTPException(status_code=409, detail="behavior tree is running; cancel first")
         try:
             current = orchestrator.get(mission_id)
             replacement = await maestro_agent.replan(
@@ -706,7 +776,9 @@ def create_app(
     @app.post("/api/v1/missions/{mission_id}/cancel")
     async def cancel_mission(mission_id: str) -> dict[str, Any]:
         try:
-            return _mission_json(orchestrator.cancel(mission_id))
+            if tree_runner.is_running(mission_id):
+                return mission_view(tree_runner.cancel(mission_id))
+            return mission_view(orchestrator.cancel(mission_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -714,6 +786,10 @@ def create_app(
 
     @app.post("/api/v1/missions/{mission_id}/run")
     async def run_mission(mission_id: str) -> dict[str, Any]:
+        if tree_runner.is_running(mission_id):
+            raise HTTPException(
+                status_code=409, detail="behavior tree is running; 1회 실행 is disabled"
+            )
         try:
             result = await orchestrator.run_round(mission_id)
             return {

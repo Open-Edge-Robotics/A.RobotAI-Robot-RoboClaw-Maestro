@@ -46,12 +46,20 @@ class Command:
         skill_name: str = "",
         params: dict[str, object] | None = None,
         deadline_epoch_ms: int | None = None,
+        cycle: int = 1,
+        rerun: int = 0,
     ) -> Command:
         if not instruction.strip():
             raise ValueError("instruction must not be empty")
         if attempt < 1:
             raise ValueError("attempt must be at least 1")
         idempotency_key = f"{mission_id}:{task_id}:{robot_id}:{attempt}"
+        if cycle > 1:
+            # Repeating behavior trees rerun the same task; each cycle is a new command.
+            idempotency_key += f":c{cycle}"
+        if rerun > 0:
+            # An operator rerun must not be answered from the robot's command journal.
+            idempotency_key += f":r{rerun}"
         return cls(
             command_id=uuid4().hex,
             mission_id=mission_id,

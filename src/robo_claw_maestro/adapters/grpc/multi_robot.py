@@ -85,12 +85,22 @@ class LazyRosGrpcRobotGateway:
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
         return await self._client().execute_skill(
             robot_id,
             skill_name=skill_name,
             params=params,
             timeout_sec=timeout_sec,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+            mission_id=mission_id,
+            attempt_id=attempt_id,
+            correlation_id=correlation_id,
         )
 
     async def request_snapshot(self, robot_id: str) -> RobotSnapshot:
@@ -167,12 +177,22 @@ class MultiRobotGateway:
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
         return await self._get(robot_id).execute_skill(
             robot_id,
             skill_name=skill_name,
             params=params,
             timeout_sec=timeout_sec,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+            mission_id=mission_id,
+            attempt_id=attempt_id,
+            correlation_id=correlation_id,
         )
 
     async def request_snapshot(self, robot_id: str) -> RobotSnapshot:

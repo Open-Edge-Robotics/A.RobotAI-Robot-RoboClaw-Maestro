@@ -79,3 +79,118 @@ Web Console
 - 브라우저 수동 UI 확인은 수행하지 않음
 
 🤖 Generated with Claude Code
+
+# 2026.11.06
+
+fix(web): Behavior Tree 새 노드에 고유 이름을 붙이고 선택 노드 표시에서 종류와 이름을 구분
+
+Behavior Tree 편집기에서 자식 추가로 만든 노드의 기본 이름이 노드 종류와 같아,
+선택 노드 제목이 "Parallel Parallel"처럼 반복되어 어떤 노드인지 알기 어려웠다.
+
+주요 변경사항:
+- 새 노드 기본 이름을 트리 안에서 겹치지 않는 번호 이름으로 생성한다.
+  (parallel-1, sequence-1, fallback-1, action-1, condition-1, sleep-1, success-1)
+- 선택 노드 제목을 "[종류] · 이름: <이름>" 형식으로 표시하고, 이름이 비어 있으면 (없음)으로 표시한다.
+- 노드 종류 배지 스타일(.bt-type)을 추가한다.
+- 기존 트리에 저장된 노드 이름은 변경하지 않는다.
+
+검증:
+- web: tsc -b 통과, vite build 성공
+- 브라우저 수동 UI 확인은 수행하지 않음
+
+변경 파일:
+- web/src/BehaviorTree.tsx
+- web/src/styles.css
+- commit.md
+
+🤖 Generated with Claude Code
+
+# 2026.11.07
+
+feat(mission): Mission Behavior Tree 실행, ExecuteSkill 전송, 승인·재실행·동료 작업 처리와 Console 개선
+
+계획 생성 시 Mission에 Behavior Tree를 함께 저장하고 Maestro가 그 트리를 실행한다.
+각 Action은 지정 로봇에 ExecuteSkill(skill + params)로 보내므로 로봇이 자연어 지시를 다시
+해석하지 않고 계획한 스킬을 그대로 실행한다. 로봇 사이의 순서, 승인, 재시도, 반복은 Maestro가 관리한다.
+로봇이 보고한 동료 작업도 Maestro를 거쳐 실행한다(Robo-Claw 2026.11.07 변경과 함께 동작).
+
+주요 변경사항:
+
+Mission Behavior Tree 실행
+- 계획 생성(/goals, replan)에서 plan의 repeat·on_failure와 로봇 배정(ONLINE 로봇 우선)으로 BT를 만들어
+  Mission constraints(behavior_tree, repeat, on_failure, planned_robots)에 저장한다.
+  전체 배터리 Condition은 두지 않고 Action마다 실행 직전에 safety policy로 검사한다.
+- 트리 구조: depends_on으로 이어진 체인마다 Sequence(단계 내 Parallel)로 만들고, 독립 체인은
+  Parallel(Independent chains)로 나란히 둔다. 한 로봇(체인)의 실패가 의존 관계 없는 다른 로봇을 취소하지 않는다.
+- application/bt_runner.py(MissionTreeRunner): Sequence/Fallback/Parallel/Action/Condition/AlwaysSuccess/
+  SleepBetweenCycles를 실행하고 노드별 상태(RUNNING/SUCCESS/FAILURE/WAITING_APPROVAL)를 기록한다.
+  - Action은 같은 이름의 Mission Task를 TaskDispatcher로 실행하고, 로봇별로 한 번에 하나씩 실행한다.
+  - 지정 로봇이 safety policy를 통과하지 못하면 안전한 로봇으로 대체한다. preferred_robot_id가 있으면 대체하지 않는다.
+  - max_attempts만큼 재시도하고 UNKNOWN은 재전송하지 않는다.
+  - 결과: 모두 성공 SUCCEEDED, 일부 성공 PARTIALLY_SUCCEEDED, 성공 없음 FAILED. 도달하지 못한 Task는 CANCELLED.
+  - repeat은 사이클마다 Task를 CREATED로 돌리고(Task.reset_for_cycle) 사이클별 idempotency key(:c<n>)로 보낸다.
+  - 실행 중 일시정지·재개·취소는 runner를 거쳐 Mission을 한 곳에서만 갱신한다. 1회 실행과 replan은 409로 막는다.
+- 끝난 Mission 재실행: Mission.reopen, Task.reset_for_rerun, POST /api/v1/missions/{id}/rerun.
+  실패부터(성공한 Task는 건너뜀) 또는 처음부터 실행하고, 재실행 Task는 :r<n> idempotency key를 쓴다.
+  재실행 시 저장된 트리를 다시 만든다.
+- behavior_tree.py: split_by_robot(로봇별 보기), with_paths(노드 경로), tree_robots, 체인 단위 plan_to_tree.
+- API: GET /api/v1/missions/{id}/behavior-tree, POST /api/v1/missions/{id}/behavior-tree/run,
+  POST /api/v1/missions/{id}/rerun. Mission 응답에 behavior_tree_run 요약을 추가하고 /missions를 최신순으로 정렬한다.
+
+Task 전송과 안전
+- MAESTRO_DISPATCH_MODE(skill | instruction, 기본 skill): skill_name이 있는 Task를 ExecuteSkill로 보낸다.
+  preferred_robot_id, resources, followup_of 등 Maestro 라우팅 값은 스킬 params에서 제외한다.
+- execute_skill gateway(port, FleetControl, RosGrpc, multi-robot, fake)에 task_id, mission_id,
+  idempotency_key, attempt_id, correlation_id를 전달한다.
+- MAESTRO_ALLOWED_SKILLS_JSON에 없는 스킬은 보내지 않고 SKILL_NOT_DISPATCHABLE로 실패 처리한다.
+- dangerous 스킬과 requires_approval Task: BT 실행 중에는 WAITING_APPROVAL로 기다리며 mission_task 승인 요청을
+  만든다(ApprovalService.request_mission_task/current/withdraw/complete). 승인하면 실행하고, 거부·만료되면
+  그 Action이 실패한다. 1회 실행에서는 승인 없이 보내지 않는다.
+- MAESTRO_BATTERY_EXEMPT_ROBOTS: 배터리 센서가 고장 난 로봇의 이동 스킬 배터리 기준 검사만 건너뛴다.
+- Mission 취소 중 로봇 결과가 도착하면 Task를 CANCELLED(성공) 또는 FAILED로 마무리한다.
+
+동료 작업(peer_requests) 처리
+- 로봇 결과의 peer_requests마다 후속 Task(<task>-peer-<n>)를 만들어 제안 동료에게 ExecuteTask로 보낸다.
+- 항상 사람 승인 후 실행하고 motion으로 취급(배터리 정책 적용)하며 다른 로봇으로 대체하지 않는다.
+  제안 동료가 없거나 보고한 로봇 자신이면 실행하지 않는다.
+- 후속 작업이 실패해도 원래 Action은 성공으로 두고 Mission은 PARTIALLY_SUCCEEDED가 된다.
+- 반복 사이클과 처음부터 재실행 때 후속 Task를 지우고 다시 만든다.
+
+Web Console
+- Mission 목록 최신순 정렬과 생성 시각 표시.
+- 계획 생성 중 버튼 잠금, 진행 바와 경과 시간, 완료(Task 수, 소요 시간)·실패 결과 표시.
+- "검증된 계획 생성"을 "계획 생성"으로 변경, 버튼별 동작 상태 설명(접힘)과 tooltip.
+- Mission 카드: "BT 실행", "실패부터 재실행", "처음부터 재실행" 버튼과 "Behavior Tree (로봇별)" 보기
+  (노드별 상태, 승인 대기 표시, 동료 작업 표시, 실행 중 2초 갱신).
+- Task 행에 skill과 지정 로봇 표시.
+- Event Timeline을 접힘으로 옮기고 telemetry·heartbeat 제외. 화면 갱신을 10초 주기로 통일.
+
+설정 / 문서
+- .env.example, docker-compose.yml: MAESTRO_DISPATCH_MODE, MAESTRO_BATTERY_EXEMPT_ROBOTS 추가.
+- role.md: on_failure abort가 의존 체인만 멈춘다는 설명과 불필요한 로봇 간 의존을 만들지 말라는 지침.
+- README: Task 전송 방식, 승인, Mission Behavior Tree 실행, 재실행, 동료 작업, 신규 API, 제한 사항.
+
+알려진 제한:
+- BT 실행 상태는 Maestro 메모리에만 있다. 실행 중 재시작하면 트리는 다시 시작되지 않는다.
+- 로봇이 수행 중인 Action은 원격 취소되지 않는다.
+- 로봇 capability input schema가 비어 있어 스킬 params 값 자체는 검증하지 않는다.
+- 동료 작업 처리는 Robo-Claw가 peer_requests를 보고할 때만 동작한다(이전 Robo-Claw는 동료를 직접 호출).
+
+변경 파일:
+- 추가: src/robo_claw_maestro/application/bt_runner.py, tests/component/test_bt_runner.py, web/src/MissionTree.tsx
+- application: approval_service.py, mission_orchestrator.py, scheduler.py, task_dispatcher.py
+- domain: command.py, mission.py, policies.py, task.py
+- agent: behavior_tree.py, maestro_agent.py, knowledge_defaults/role.md
+- adapters/grpc: fleet_control_server.py, multi_robot.py, ros_grpc_client.py
+- api/app.py, config.py, main.py, ports/robot_gateway.py
+- tests/integration/test_api.py
+- web/src/main.tsx, web/src/styles.css
+- .env.example, docker-compose.yml, README.md, commit.md
+
+검증:
+- pytest: 165 passed
+- ruff check / ruff format --check 통과
+- web: tsc -b 통과, vite build 성공
+- 실제 로봇 연동과 브라우저 수동 UI 확인은 수행하지 않음
+
+🤖 Generated with Claude Code

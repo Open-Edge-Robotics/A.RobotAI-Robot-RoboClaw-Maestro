@@ -43,3 +43,31 @@ select { border: 1px solid #32635c; border-radius: 7px; background: #102320; col
 .bt-issues { margin: 8px 0 0; padding-left: 18px; font-size: .78rem; }.bt-json { width: 100%; box-sizing: border-box; min-height: 360px; margin-top: 10px; font: .8rem/1.4 ui-monospace, monospace; }
 @media (max-width: 960px) { .bt-layout { grid-template-columns: 1fr; } .bt-inspector { position: static; } }
 .bt-type { padding: 2px 8px; border-radius: 6px; background: #164a42; color: #9bffe0; font-size: .85em; }
+.mission-help { margin-bottom: 14px; }.mission-help dl { grid-template-columns: 120px 1fr; font-size: .82rem; margin: 10px 0 0; }.mission-help dd { text-align: left; color: #cfe5e1; }.event-timeline { margin-top: 20px; }
+.plan-progress { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid #2d4f4a; border-radius: 8px; background: #10201e; }
+.plan-progress p { margin: 0 0 4px; }
+.plan-progress small { color: #8fb3ad; }
+.plan-progress.done { border-color: #2f6b4f; }
+.plan-progress.failed { border-color: #7a3434; }
+.plan-progress-bar { position: relative; height: 4px; margin-bottom: 8px; overflow: hidden; border-radius: 2px; background: #1d3532; }
+.plan-progress-bar span { position: absolute; inset: 0 auto 0 0; width: 35%; background: #4fd1b5; animation: plan-progress 1.4s ease-in-out infinite; }
+@keyframes plan-progress { 0% { left: -35%; } 100% { left: 100%; } }
+.mission-tree { margin: 12px 0; }
+.mission-tree summary { cursor: pointer; color: #9fd9cf; }
+.mt-note { display: block; margin: 8px 0; color: #8fb3ad; }
+.mt-run-message { margin: 6px 0; }
+.mt-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.mt-lane { padding: 10px; border: 1px solid #2d4f4a; border-radius: 8px; background: #0f1d1b; overflow-x: auto; }
+.mt-lane h4 { margin: 0 0 8px; }
+.mt-tree, .mt-tree ul { list-style: none; margin: 0; padding-left: 14px; }
+.mt-tree { padding-left: 0; }
+.mt-tree li { margin: 4px 0; }
+.mt-node { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 6px; border-left: 3px solid #3a5551; border-radius: 4px; font-size: .85rem; }
+.mt-node small { color: #8fb3ad; }
+.mt-node .mt-params { font-family: monospace; word-break: break-all; }
+.mt-node .mt-message { flex-basis: 100%; }
+.mt-node.run { border-left-color: #e3c15a; background: #2a2614; }
+.mt-node.ok { border-left-color: #3fbf85; }
+.mt-node.fail { border-left-color: #d9534f; background: #2a1517; }
+.mt-status { font-size: .72rem; padding: 1px 6px; border-radius: 999px; background: #29413e; }
+.mt-node.wait { border-left-color: #6fa8ff; background: #14213a; }

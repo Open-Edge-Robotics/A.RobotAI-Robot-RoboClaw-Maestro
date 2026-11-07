@@ -68,6 +68,19 @@ class MissionOrchestrator:
     def events(self) -> EventRepository:
         return self._events
 
+    @property
+    def scheduler(self) -> FleetScheduler:
+        return self._scheduler
+
+    @property
+    def dispatcher(self) -> TaskDispatcher:
+        return self._dispatcher
+
+    def persist(self, mission: Mission) -> None:
+        """Record pending mission/task events and save the mission."""
+        self._append_transition_events(mission)
+        self._save(mission)
+
     @traceable(
         run_type="chain",
         name="persist_mission",
@@ -156,10 +169,18 @@ class MissionOrchestrator:
     @traceable(run_type="chain", name="mission_cancel", process_inputs=process_inputs)
     def cancel(self, mission_id: str) -> Mission:
         mission = self.get(mission_id)
+        self.apply_cancel(mission)
+        self._append_transition_events(mission)
+        self._save(mission)
+        return mission
+
+    @staticmethod
+    def apply_cancel(mission: Mission) -> None:
+        """Cancel unfinished tasks in place; active tasks stay CANCEL_REQUESTED."""
         if mission.status in _FINISHED_MISSION_STATUSES:
             # Cancelling a finished mission is a no-op so a repeated console click
             # returns the current state instead of a 409 transition error.
-            return mission
+            return
         mission.transition_to(MissionStatus.CANCEL_REQUESTED)
         active = {
             TaskStatus.ASSIGNED,
@@ -179,9 +200,6 @@ class MissionOrchestrator:
             for task in mission.tasks.values()
         ):
             mission.transition_to(MissionStatus.CANCELLED)
-        self._append_transition_events(mission)
-        self._save(mission)
-        return mission
 
     @traceable(
         run_type="chain",

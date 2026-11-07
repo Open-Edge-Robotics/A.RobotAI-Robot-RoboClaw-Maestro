@@ -60,6 +60,8 @@ services:
       MAESTRO_KNOWLEDGE_DIR: /app/knowledge
       MAESTRO_PLAN_SINGLE_SKILL: ${MAESTRO_PLAN_SINGLE_SKILL:-true}
       MAESTRO_PLAN_MAX_TASKS: ${MAESTRO_PLAN_MAX_TASKS:-100}
+      MAESTRO_DISPATCH_MODE: ${MAESTRO_DISPATCH_MODE:-skill}
+      MAESTRO_BATTERY_EXEMPT_ROBOTS: ${MAESTRO_BATTERY_EXEMPT_ROBOTS:-}
     volumes:
       # Planning documents edited in the Console settings menu.
       - ${MAESTRO_KNOWLEDGE_HOST_DIR:-./knowledge}:/app/knowledge

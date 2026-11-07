@@ -18,6 +18,9 @@ class SkillNotAllowed(ValueError):
     pass
 
 
+MISSION_TASK_ACTION = "mission_task:"
+
+
 class ApprovalService:
     def __init__(
         self,
@@ -74,11 +77,70 @@ class ApprovalService:
         self._emit("approval.requested", approval)
         return approval
 
+    def request_mission_task(
+        self,
+        *,
+        robot_id: str,
+        mission_id: str,
+        task_id: str,
+        skill_name: str,
+        params: dict[str, Any],
+        reason: str,
+    ) -> ApprovalRequest:
+        """Ask a human to approve one behavior-tree Action before it is dispatched.
+
+        Approving does not execute anything here; the waiting tree runner dispatches the
+        mission Task and reports the outcome with :meth:`complete`.
+        """
+        approval = ApprovalRequest.create(
+            robot_id=robot_id,
+            action=f"{MISSION_TASK_ACTION}{skill_name}",
+            payload={
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "skill_name": skill_name,
+                "params": params,
+            },
+            requested_by="behavior-tree",
+            reason=reason,
+            expires_at=datetime.now(UTC) + timedelta(seconds=self._ttl),
+        )
+        self._repository.add(approval)
+        self._emit("approval.requested", approval)
+        return approval
+
+    def current(self, approval_id: str) -> ApprovalRequest:
+        """Return the approval, marking it EXPIRED once its deadline has passed."""
+        approval = self.get(approval_id)
+        if approval.status is ApprovalStatus.PENDING and approval.expires_at is not None:
+            expires = approval.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=UTC)
+            if expires <= datetime.now(UTC):
+                approval.status = ApprovalStatus.EXPIRED
+                self._repository.save(approval)
+                self._emit("approval.expired", approval)
+        return approval
+
+    def withdraw(self, approval_id: str, actor: str) -> None:
+        """Reject a still-pending request (its mission was cancelled)."""
+        approval = self.current(approval_id)
+        if approval.status is ApprovalStatus.PENDING:
+            self.reject(approval_id, actor)
+
+    def complete(self, approval_id: str, success: bool, result: dict[str, Any]) -> None:
+        approval = self.get(approval_id)
+        approval.mark_executed(success, result)
+        self._repository.save(approval)
+        self._emit("approval.executed" if success else "approval.failed", approval)
+
     async def approve(self, approval_id: str, actor: str) -> ApprovalRequest:
         approval = self.get(approval_id)
         approval.approve(actor)
         self._repository.save(approval)
         self._emit("approval.approved", approval)
+        if approval.action.startswith(MISSION_TASK_ACTION):
+            return approval  # the behavior-tree runner dispatches the approved Task
         if not approval.action.startswith("skill:"):
             raise ValueError(f"unsupported approval action: {approval.action}")
         skill_name = approval.action.removeprefix("skill:")

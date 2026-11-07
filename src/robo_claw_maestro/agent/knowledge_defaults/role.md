@@ -28,6 +28,6 @@ Maestro는 여러 Robo-Claw 로봇에게 일을 나누어 주는 fleet 관제자
 - Task 하나는 **스킬 하나 호출**입니다. `skill_name`에 스킬 하나, `params`에 그 스킬의 인자를 넣고 `required_capabilities`는 `[skill_name]`으로 둡니다. 이 형식이어야 Behavior Tree의 Action 노드로 바로 변환됩니다.
 - `task_id`는 영문 소문자와 하이픈으로 짧게 씁니다. 예: `scan-livingroom`
 - `instruction`은 사람이 읽는 한 문장 설명입니다.
-- 실패해도 다음 단계로 넘어가도 되는 Task는 `on_failure: "continue"`, 실패하면 이번 사이클을 멈춰야 하면 `"abort"`(기본)입니다.
+- 실패해도 다음 단계로 넘어가도 되는 Task는 `on_failure: "continue"`, 실패하면 그 Task에 의존하는 단계를 멈춰야 하면 `"abort"`(기본)입니다. `depends_on`으로 이어지지 않은 다른 로봇의 작업은 영향을 받지 않으므로, 로봇끼리 서로 기다릴 필요가 없으면 의존 관계를 만들지 않습니다.
 - "주기적으로", "매시간"처럼 반복되는 목표는 **한 사이클의 Task만** 계획하고 최상위에 `"repeat": {"interval_sec": 3600, "max_cycles": 0}`을 둡니다. 0은 중단할 때까지 반복입니다.
 - `timeout_sec`는 이동 300, 관찰 120, 정리 작업 900을 기본값으로 삼습니다.

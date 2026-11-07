@@ -124,6 +124,8 @@ class Task:
     result: dict[str, Any] = field(default_factory=dict)
     error_code: str = ""
     error_message: str = ""
+    cycle: int = 1
+    rerun: int = 0
     _events: list[DomainEvent] = field(default_factory=list, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -209,6 +211,47 @@ class Task:
             TaskStatus.TIMED_OUT,
             TaskStatus.UNKNOWN,
         }
+
+    def reset_for_cycle(self, cycle: int) -> None:
+        """Return a finished task to CREATED for the next behavior-tree cycle."""
+        if cycle <= self.cycle:
+            raise ValueError("cycle must increase")
+        self.cycle = cycle
+        self._reset({"cycle": cycle})
+
+    def reset_for_rerun(self, rerun: int) -> None:
+        """Return a finished task to CREATED so an operator can run the mission again."""
+        if rerun <= self.rerun:
+            raise ValueError("rerun must increase")
+        self.rerun = rerun
+        self.cycle = 1
+        self._reset({"rerun": rerun})
+
+    def _reset(self, detail: dict[str, int]) -> None:
+        previous = self.status
+        self.status = TaskStatus.CREATED
+        self.assigned_robot_id = None
+        self.attempt_count = 0
+        self.attempted_robot_ids = set()
+        self.idempotency_key = ""
+        self.progress = 0
+        self.result = {}
+        self.error_code = ""
+        self.error_message = ""
+        self._events.append(
+            DomainEvent.create(
+                event_type="task.status_changed",
+                aggregate_type="task",
+                aggregate_id=self.task_id,
+                payload={
+                    "mission_id": self.mission_id,
+                    "from": previous.value,
+                    "to": TaskStatus.CREATED.value,
+                    **detail,
+                },
+                correlation_id=self.mission_id,
+            )
+        )
 
     def prepare_retry(self) -> None:
         if not self.can_retry():

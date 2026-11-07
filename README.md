@@ -12,7 +12,7 @@ Robo-Claw Maestro는 여러 Robo-Claw 로봇을 중앙에서 모니터링하고 
 | Phase 3 | 대부분 완료 | Registry, snapshot 저장, telemetry event/retention, REST API, WebSocket event, read/control/admin token | 장기 telemetry 집계 정책과 외부 IdP 기반 RBAC는 없음 |
 | Phase 4 | 핵심 구현 | Mission lifecycle, dependency/병렬 dispatch, retry/reassignment, DB resource lease, startup reconciliation, safety policy, deadline | RosGrpc ACK 분리, 실행 중 원격 cancel/pause, distributed worker 자동 scheduling loop 보강 필요 |
 | Phase 5 | 대부분 완료 | Plan parser, Robot registry 기반 실시간 capability catalog, tool facade, Ollama/OpenAI/Azure OpenAI/Anthropic, goal API, bounded replanning, planning metric, LangSmith plan trace | provider 실제 token usage와 자동 replanning trigger는 없음 |
-| Phase 6 | 부분 구현 | React fleet/mission/event Console, planning 문서 편집과 Dry-run, Behavior Tree 구성·검증, goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
+| Phase 6 | 부분 구현 | React fleet/mission/event Console, planning 문서 편집과 Dry-run, Behavior Tree 구성·검증, Mission Behavior Tree 실행(로봇별 보기), goal 입력, 승인 대기, snapshot, 직접 Task, emergency controls | 실제 지도 component, 별도 robot 상세 화면, camera polling/stream 최적화 필요 |
 | Phase 7 | Connector 구현·실기기 검증 대기 | FleetControl proto/server, 실제 `robo_claw_grpc` outbound connector, registration/telemetry, SQLite dedup/result replay, TLS/mTLS | 실제 Robot 읽기 전용 인수, AgentStatus 통합, 실제 cancel/pause/resume handler 필요 |
 | Phase 8 | 부분 구현 | health/RBAC, Prometheus metric, optional LangSmith trace, JSON log, rate limit, event retention, backup/장애 runbook, reconnect fault test | OpenTelemetry exporter, 인증서 교체 자동화, 부하 테스트, DB restore 자동 검증 필요 |
 
@@ -180,13 +180,15 @@ LLM provider 연결 실패는 `502 LLM provider error: ...`로 원인과 함께 
 ```
 
 - `skill_name`이 없거나 `required_capabilities`에 다른 capability가 섞이면 422로 거부합니다.
-- `on_failure`: `abort`(기본, 이번 사이클 중단) 또는 `continue`(이 단계만 건너뜀)
+- `on_failure`: `abort`(기본, 그 Task에 의존하는 체인을 이번 사이클에서 중단) 또는 `continue`(이 단계만 건너뜀). 서로 의존하지 않는 다른 체인은 계속 실행됩니다.
 - `repeat`: "주기적으로" 같은 목표는 한 사이클만 계획하고 반복 간격을 둡니다. `max_cycles` 0은 중단할 때까지입니다.
 - Dry-run은 Task마다 배정 로봇을 제안합니다. 지정 로봇(`preferred_robot_id`)을 먼저 따르고, 의존 단계는 앞 단계를 실행한 로봇에 이어서 배정하며, 나머지는 같은 단계 안에서 부하가 적은 로봇에 나눕니다.
 - 기존처럼 자유 형식 Task를 허용하려면 `MAESTRO_PLAN_SINGLE_SKILL=false`로 설정합니다.
 - 한 Plan의 최대 Task 수는 `MAESTRO_PLAN_MAX_TASKS`(기본 100, 1~500)로 조정합니다. 넘으면 `plan exceeds maximum task count`로 거부됩니다.
 
-> 현재 Mission 실행(dispatcher)은 Task를 여전히 자연어 `ExecuteTask`로 로봇에 보내며 `skill_name`을 사용하지 않습니다. 단일 스킬 형식은 Dry-run 검증과 Behavior Tree 구성에 사용됩니다.
+- Task 전송 방식은 `MAESTRO_DISPATCH_MODE`로 정합니다. `skill`(기본)은 `skill_name`이 있는 Task를 `ExecuteSkill`로 보내 로봇이 계획한 스킬과 params를 그대로 실행합니다. `instruction`은 모든 Task를 자연어 `ExecuteTask`로 보내 로봇 LLM이 다시 해석합니다. `skill_name`이 없는 Task는 항상 `ExecuteTask`입니다.
+- `MAESTRO_ALLOWED_SKILLS_JSON`에 없는 스킬은 로봇에 보내지 않고 Task를 `SKILL_NOT_DISPATCHABLE`로 실패 처리합니다.
+- `risk_level=dangerous` 스킬은 승인 없이는 보내지 않습니다. **BT 실행** 중에는 그 Action이 `WAITING_APPROVAL`로 멈추고 콘솔 **승인 대기**에 `mission_task:<skill>` 요청이 생깁니다. 승인하면 그 Action을 실행하고 트리를 이어 가며, 거부하거나 만료(기본 15분)되면 그 Action이 실패합니다. 재시도할 때마다 새로 승인을 받습니다. 1회 실행에서는 승인 대기 없이 `SKILL_NOT_DISPATCHABLE`로 실패합니다.
 
 ## Behavior Tree 구성
 
@@ -204,7 +206,8 @@ Console의 **Behavior Tree** 탭에서 단일 스킬 Plan을 Behavior Tree로 �
 
 1. **설정 → Plan Dry-run**을 실행하고 결과의 **Behavior Tree로 변환**을 누릅니다.
 2. 변환 규칙(결정적, LLM 미사용):
-   - 같은 단계(stage)의 Task는 `Parallel`(모두 성공), 단계끼리는 `Sequence`로 묶습니다.
+   - `depends_on`으로 이어진 Task 묶음(체인)마다 단계(stage)를 `Sequence`로, 같은 단계는 `Parallel`(모두 성공)로 묶습니다.
+   - 서로 의존하지 않는 체인이 여럿이면 `Parallel(Independent chains)` 아래에 나란히 둡니다. 한 체인(예: 한 로봇)이 실패해도 다른 체인은 취소되지 않습니다.
    - `on_failure: continue`인 Task는 `Fallback[Action, AlwaysSuccess]`로 감쌉니다.
    - 배정된 로봇마다 배터리 `Condition`(기본 20%)을 앞에 둡니다.
    - `repeat`이 있으면 `Sequence[배터리 조건…, Fallback[CycleWork, CycleDone], SleepBetweenCycles]` 형태가 됩니다. Robo-Claw `autonomous_act` patrol 트리와 같은 구조입니다.
@@ -212,7 +215,37 @@ Console의 **Behavior Tree** 탭에서 단일 스킬 Plan을 Behavior Tree로 �
 4. 편집할 때마다 자동으로 검증합니다. 노드 구조, `Parallel.success_count`, 로봇 존재 여부, **로봇이 해당 스킬을 가졌는지**(연결 로봇 + `robots.md` 프로필 기준)를 확인하고 오류 노드를 빨간 테두리로 표시합니다.
 5. 이름(소문자, 숫자, `-`, `_`)을 정해 저장합니다. `MAESTRO_KNOWLEDGE_DIR/behavior_trees/<name>.json`에 저장됩니다.
 
-> Behavior Tree는 현재 구성·검증·저장까지 지원합니다. Maestro나 Robo-Claw에서 이 JSON을 실행하는 기능은 아직 없습니다. Robo-Claw의 BT는 스킬 코드 안에 고정된 트리로 구현되어 있어, 실행하려면 JSON 트리를 받아 조립하는 Robo-Claw 쪽 스킬이나 Maestro 쪽 실행기가 추가로 필요합니다.
+> Behavior 탭의 트리는 구성·검증·저장용입니다. 실행은 아래 Mission Behavior Tree로 합니다.
+
+## Mission Behavior Tree 실행
+
+**계획 생성**(`POST /api/v1/goals`)은 Plan과 함께 Mission의 Behavior Tree를 만들어 `constraints.behavior_tree`에 저장합니다. 로봇 배정은 Dry-run과 같은 규칙이며 지금 ONLINE인 로봇을 우선합니다. Mission 트리에는 전체 배터리 `Condition`을 두지 않고, Action마다 실행 직전에 safety policy(연결 상태, capability, 이동 스킬 배터리 20% 등)를 검사합니다. 로봇 한 대의 배터리 때문에 전체 Mission이 멈추지 않게 하기 위해서입니다.
+
+Mission 카드의 **Behavior Tree (로봇별)**에서 로봇마다 자기 노드만 남긴 트리와 노드별 실행 상태를 봅니다. **BT 실행**을 누르면 다음처럼 동작합니다.
+
+- **Maestro가 전체 트리를 실행**합니다. 로봇에 트리를 보내지 않습니다. 로봇은 외부 트리를 받는 명령이 없고, 단계가 로봇 사이에 걸쳐 있으면(A·B가 끝나야 C) 조율이 Maestro에 있어야 하기 때문입니다.
+- `Action`은 이름이 같은 Mission Task를 실행합니다. 지정 로봇에 `ExecuteSkill`(skill + params)로 보내고 결과를 기다립니다. Robo-Claw 쪽 변경은 필요 없습니다.
+- 지정 로봇이 safety policy를 통과하지 못하면 같은 스킬을 가진 안전한 로봇으로 대체합니다. Task에 `preferred_robot_id`가 있으면 대체하지 않고 그 Action을 실패 처리합니다.
+- 같은 로봇의 Action은 한 번에 하나씩 실행합니다. `max_attempts`만큼 재시도하지만, 결과를 알 수 없는 `UNKNOWN`은 재전송하지 않습니다.
+- 실패한 Task에 의존하던 Task는 실행되지 않고 `CANCELLED`가 됩니다. 의존하지 않는 체인은 끝까지 실행됩니다.
+- Mission 결과: 모두 성공하면 `SUCCEEDED`, 일부만 성공하면(건너뛴 `continue` Task 포함) `PARTIALLY_SUCCEEDED`, 성공한 Task가 하나도 없으면 `FAILED`입니다.
+- 이동 스킬은 배터리 20% 미만이거나 배터리를 모르면 거부됩니다. 이 검사는 safety policy라 목표 문장으로는 건너뛸 수 없습니다. 배터리 센서가 고장 난 로봇은 `MAESTRO_BATTERY_EXEMPT_ROBOTS=Former0047`(쉼표 구분)로 지정해 이 검사만 건너뜁니다. 실제 배터리를 사람이 확인할 때만 사용하세요.
+- `repeat`가 있으면 사이클마다 Task를 다시 `CREATED`로 돌리고 새 idempotency key로 실행합니다. `max_cycles` 0은 취소할 때까지 반복합니다.
+- **일시정지**는 다음 노드로 넘어가지 않게 하고, **재개**는 이어서 실행합니다. **취소**는 남은 Task를 취소하며, 로봇이 이미 수행 중인 Action은 끝날 때까지 기다립니다. 원격 취소는 지원하지 않습니다.
+- BT 실행 중에는 **1회 실행**과 replan이 `409`로 거부됩니다.
+- **동료 작업은 Maestro를 거칩니다.** Robo-Claw 로봇은 Maestro 관제 중(`MAESTRO_IP` 설정, 또는 `RC_PEER_HANDOFF_MODE=report`)에 `tidy_home`에서 동료를 직접 부르지 않고, 정리를 마친 뒤 결과의 `peer_requests`로 "동료 작업 필요"를 보고합니다. Maestro는 요청마다 후속 Task(`<원래 Task>-peer-<n>`)를 만들어 제안된 동료 로봇에 보냅니다.
+  - 후속 Task는 항상 사람 승인 후 실행합니다(승인 대기에 동료 작업 요청으로 표시). 이동 작업으로 취급해 배터리 정책도 적용합니다. 제안 동료가 없거나 사용할 수 없으면 다른 로봇으로 대체하지 않습니다.
+  - 로봇별 보기에서 보고한 Action 아래에 "동료 작업"으로 상태가 표시됩니다. 후속 작업이 실패해도 원래 Action은 성공으로 두고 Mission은 `PARTIALLY_SUCCEEDED`가 됩니다.
+  - 이 기능에는 Robo-Claw 쪽 변경(2026.11.07, `skills/fleet_handoff.py`)이 필요합니다. 이전 Robo-Claw는 동료를 직접 부르고, `tidy_home`이 시작 즉시 성공을 반환합니다.
+- 끝난 Mission은 다시 실행할 수 있습니다(`POST /api/v1/missions/{id}/rerun`). 로봇의 실패 원인을 고친 뒤 사용합니다.
+  - **실패부터 재실행**(`failed_only: true`, FAILED·PARTIALLY_SUCCEEDED·CANCELLED): 성공한 Task는 두고 나머지만 `CREATED`로 돌립니다. 트리는 성공한 Action을 건너뛰므로 실패한 단계부터 이어집니다.
+  - **처음부터 재실행**(`failed_only: false`, 끝난 모든 Mission): 모든 Task를 다시 실행합니다.
+  - 재실행한 Task는 새 idempotency key(`:r<n>`)로 보내 로봇의 명령 기록에서 이전 실패 결과가 그대로 돌아오지 않게 합니다. 로봇에서 아직 수행 중인 Task가 있으면 거부합니다.
+
+제한:
+
+- 실행 상태(노드별 상태, 사이클)는 Maestro 메모리에만 있습니다. 실행 중 Maestro가 재시작되면 트리는 다시 시작되지 않습니다. 이미 성공한 Task는 다시 **BT 실행**을 눌러도 건너뜁니다. 수행 중이던 Task가 남아 있으면 **취소**하세요.
+- 계획 생성 전에 만든 Mission처럼 저장된 트리가 없으면 Task 의존 관계로 트리를 만들어 실행합니다.
 
 ## 검증 지점 2: 간단한 in-memory fleet
 
@@ -596,6 +629,9 @@ PUT  /api/v1/behavior-trees/{name}
 DELETE /api/v1/behavior-trees/{name}
 GET  /api/v1/missions
 POST /api/v1/missions
+GET  /api/v1/missions/{mission_id}/behavior-tree
+POST /api/v1/missions/{mission_id}/behavior-tree/run
+POST /api/v1/missions/{mission_id}/rerun
 POST /api/v1/missions/{mission_id}/start
 POST /api/v1/missions/{mission_id}/pause
 POST /api/v1/missions/{mission_id}/resume

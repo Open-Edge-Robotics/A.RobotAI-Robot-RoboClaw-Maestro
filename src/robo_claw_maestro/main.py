@@ -40,6 +40,7 @@ from robo_claw_maestro.application.robot_registry import RobotRegistry
 from robo_claw_maestro.application.scheduler import FleetScheduler
 from robo_claw_maestro.application.task_dispatcher import TaskDispatcher
 from robo_claw_maestro.config import Settings
+from robo_claw_maestro.domain.policies import SchedulingSafetyPolicy
 from robo_claw_maestro.domain.robot import Capability, Robot
 from robo_claw_maestro.logging import configure_logging
 from robo_claw_maestro.telemetry.metrics import MaestroMetrics
@@ -100,9 +101,14 @@ def build_app():
         gateway,
         command_repository=SqlModelCommandRepository(store),
         metrics=metrics,
+        dispatch_mode=settings.dispatch_mode,
+        allowed_skills=settings.allowed_skills,
     )
     orchestrator = MissionOrchestrator(
-        FleetScheduler(registry),
+        FleetScheduler(
+            registry,
+            SchedulingSafetyPolicy(battery_exempt_robot_ids=settings.battery_exempt_robot_ids),
+        ),
         dispatcher,
         mission_repository=SqlModelMissionRepository(store),
         event_repository=event_repository,

@@ -347,3 +347,50 @@ def test_repeated_mission_cancel_is_idempotent():
     assert second.status_code == 200
     assert second.json()["status"] == "CANCELLED"
     assert [task["status"] for task in second.json()["tasks"]] == ["CANCELLED"]
+
+
+def test_goal_plan_carries_behavior_tree_that_runs_robot_skills():
+    import time
+
+    from robo_claw_maestro.domain.robot import Capability, Robot, RobotConnectionState
+    from robo_claw_maestro.ports.robot_gateway import RobotStatusSnapshot
+
+    gateway = FakeRobotGateway([RobotStatusSnapshot(robot_id="r1")])
+    registry = RobotRegistry(gateway)
+    robot = Robot("r1", "Robot One", connection_state=RobotConnectionState.ONLINE)
+    robot.add_capability(Capability("get_status"))
+    registry.register(robot)
+    orchestrator = MissionOrchestrator(FleetScheduler(registry), TaskDispatcher(registry, gateway))
+    plan = (
+        '{"tasks":[{"task_id":"status-r1","instruction":"check status","skill_name":"get_status",'
+        '"params":{},"required_capabilities":["get_status"],"depends_on":[]}]}'
+    )
+    agent = MaestroAgent(
+        FakeLlmProvider([plan]),
+        MissionPlanParser({"get_status"}, single_skill=True),
+        fleet_catalog=lambda: [
+            {"robot_id": "r1", "connection_state": "ONLINE", "capabilities": ["get_status"]}
+        ],
+    )
+    with TestClient(create_app(registry, orchestrator, maestro_agent=agent)) as client:
+        mission_id = client.post("/api/v1/goals", json={"goal": "status"}).json()["mission_id"]
+
+        view = client.get(f"/api/v1/missions/{mission_id}/behavior-tree").json()
+        assert view["stored"] is True
+        assert list(view["robots"]) == ["r1"]
+        assert view["robots"]["r1"]["children"][0]["skill"] == "get_status"
+
+        started = client.post(f"/api/v1/missions/{mission_id}/behavior-tree/run")
+        assert started.status_code == 200
+        for _ in range(50):
+            run = client.get(f"/api/v1/missions/{mission_id}/behavior-tree").json()["run"]
+            if not run["active"]:
+                break
+            time.sleep(0.02)
+
+        assert run["status"] == "SUCCEEDED"
+        assert run["nodes"]["root.0"]["status"] == "SUCCESS"
+        missions = client.get("/api/v1/missions").json()
+        assert missions[0]["status"] == "SUCCEEDED"
+        assert missions[0]["behavior_tree_run"]["status"] == "SUCCEEDED"
+        assert gateway.executed_skills[0]["skill_name"] == "get_status"

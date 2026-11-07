@@ -17,6 +17,7 @@ from robo_claw_maestro.telemetry.tracing import (
     traceable,
 )
 
+from .behavior_tree import plan_to_tree
 from .knowledge import KnowledgeBase
 from .metrics import PlanningMetrics
 from .planner import MissionPlanParser, PlanValidationError
@@ -205,8 +206,9 @@ class MaestroAgent:
     ) -> Mission:
         self.metrics.requests += 1
         system_prompt = self._system_prompt()
+        catalog = self._fleet_catalog() if self._fleet_catalog is not None else []
         if self._fleet_catalog is not None:
-            user_prompt = _with_catalog(self._fleet_catalog(), user_prompt)
+            user_prompt = _with_catalog(catalog, user_prompt)
         self.metrics.estimated_input_tokens += self.metrics.estimate_tokens(
             system_prompt + user_prompt
         )
@@ -225,9 +227,11 @@ class MaestroAgent:
                     created_by=created_by,
                     mission_id=mission_id,
                 )
+                repeat, policies = self._parser.metadata(response)
             except PlanValidationError:
                 self.metrics.validation_errors += 1
                 raise
+            attach_behavior_tree(mission, catalog, repeat, policies)
             self.metrics.succeeded += 1
             return mission
         finally:
@@ -312,6 +316,37 @@ class MaestroAgent:
             raise
         except Exception as exc:
             raise LlmProviderError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def attach_behavior_tree(
+    mission: Mission,
+    catalog: list[dict[str, Any]],
+    repeat: dict[str, Any] | None,
+    policies: dict[str, str],
+) -> dict[str, Any]:
+    """Store the mission's behavior tree, robot assignment, and loop policy in constraints.
+
+    Robots are chosen like the dry-run (preferred robot, then the robot that ran the
+    dependency, then the least-loaded candidate), preferring robots that are ONLINE now.
+    The tree has no root battery guard: per-action safety is checked at dispatch time so
+    one low-battery robot does not stop the whole mission.
+    """
+    online = [entry for entry in catalog if entry.get("connection_state") == "ONLINE"]
+    report = _analyze_tasks(mission, online or catalog, policies)
+    tree = plan_to_tree(
+        name=mission.mission_id[:64].lower(),
+        goal=mission.goal,
+        tasks=report,
+        repeat=repeat,
+        battery_guard_pct=None,
+    )
+    mission.constraints["behavior_tree"] = tree
+    mission.constraints["repeat"] = repeat
+    mission.constraints["on_failure"] = {item["task_id"]: item["on_failure"] for item in report}
+    mission.constraints["planned_robots"] = {
+        item["task_id"]: item["assigned_robot_id"] for item in report
+    }
+    return tree
 
 
 def _with_catalog(catalog: list[dict[str, Any]], request: str) -> str:

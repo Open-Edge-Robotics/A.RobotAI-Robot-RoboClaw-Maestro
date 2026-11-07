@@ -47,6 +47,10 @@ class FleetScheduler:
         self._registry = registry
         self._safety = safety_policy or SchedulingSafetyPolicy()
 
+    def evaluate(self, robot: Robot, task: Task):
+        """Return the safety-policy decision for running ``task`` on ``robot``."""
+        return _evaluate_candidate(self._safety, robot, task)
+
     @traceable(
         run_type="chain",
         name="score_robot_candidates",

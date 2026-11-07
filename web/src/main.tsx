@@ -1,6 +1,7 @@
 import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BehaviorTree, type TreeSeed } from "./BehaviorTree";
+import { MissionTree } from "./MissionTree";
 import { type DryRunResult, Settings } from "./Settings";
 import "./styles.css";
 
@@ -23,6 +24,8 @@ type Task = {
   assigned_robot_id: string | null;
   depends_on: string[];
   progress: number;
+  skill_name?: string;
+  params?: Record<string, unknown>;
 };
 
 type Mission = {
@@ -30,8 +33,20 @@ type Mission = {
   goal: string;
   status: string;
   plan_version: number;
+  created_at?: string;
   tasks: Task[];
+  behavior_tree_run?: { status: string; active: boolean; paused: boolean; cycle: number; message: string } | null;
 };
+
+function sortMissionsNewestFirst(items: Mission[]): Mission[] {
+  return [...items].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+}
+
+function formatCreatedAt(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
 
 type Approval = {
   approval_id: string;
@@ -51,7 +66,22 @@ type FleetEvent = {
   payload: Record<string, unknown>;
 };
 
-const EVENT_REFRESH_INTERVAL_MS = 1000;
+// The console polls on a fixed interval instead of refreshing on every stream event:
+// telemetry arrives several times per second and carries little operator value.
+const REFRESH_INTERVAL_MS = 10_000;
+const NOISY_EVENT_TYPES = new Set(["robot.telemetry_updated", "robot.heartbeat"]);
+
+// What each mission button does, shown as a tooltip and in the help panel.
+const MISSION_BUTTON_HELP = {
+  rerunFailed: "FAILED·PARTIALLY_SUCCEEDED·CANCELLED에서 동작합니다. 성공한 Task는 그대로 두고 나머지를 다시 CREATED로 돌려 BT를 실행합니다. 트리는 성공한 Action을 건너뛰므로 실패한 단계부터 이어집니다.",
+  rerunAll: "끝난 모든 Mission에서 동작합니다. 모든 Task를 다시 CREATED로 돌려 BT를 처음부터 실행합니다.",
+  tree: "DRAFT·READY·RUNNING에서 동작합니다. Maestro가 Behavior Tree를 끝까지 자동 실행합니다. 각 Action은 지정 로봇에 ExecuteSkill로 보내고, 단계 순서·실패 처리·반복을 트리대로 지킵니다. 실행 중에는 1회 실행이 잠깁니다.",
+  start: "DRAFT에서만 동작합니다. Mission을 READY(실행 대기)로 바꿀 뿐 로봇에 명령을 보내지 않습니다.",
+  run: "DRAFT·READY·RUNNING에서 동작합니다. 의존 관계가 풀린 Task를 로봇에 배정·실행하고 그 결과를 기다립니다. 단계마다 다시 눌러야 다음 Task가 실행됩니다.",
+  pause: "READY·RUNNING에서 동작합니다. 1회 실행과 BT의 다음 노드 진행을 멈춥니다. 이미 로봇이 수행 중인 Action은 멈추지 않습니다.",
+  resume: "PAUSED에서 동작합니다. RUNNING으로 되돌려 BT를 이어서 실행하거나 1회 실행을 할 수 있게 합니다.",
+  cancel: "끝나지 않은 모든 상태에서 동작합니다. 남은 Task를 취소합니다. 로봇이 수행 중인 Task는 원격 취소가 지원되지 않아 끝까지 진행될 수 있습니다."
+};
 
 const FINISHED_MISSION_STATUSES = new Set([
   "SUCCEEDED",
@@ -62,11 +92,14 @@ const FINISHED_MISSION_STATUSES = new Set([
 
 // Mirrors the orchestrator state machine so the console never posts a transition
 // the backend will reject with 409.
-function missionActions(status: string) {
+function missionActions(status: string, treeActive = false) {
   const finished = FINISHED_MISSION_STATUSES.has(status);
   return {
-    start: status === "DRAFT",
-    run: !finished && status !== "PAUSED" && status !== "CANCEL_REQUESTED",
+    start: status === "DRAFT" && !treeActive,
+    run: !finished && !treeActive && status !== "PAUSED" && status !== "CANCEL_REQUESTED",
+    tree: !treeActive && (status === "DRAFT" || status === "READY" || status === "RUNNING"),
+    rerunFailed: !treeActive && (status === "FAILED" || status === "PARTIALLY_SUCCEEDED" || status === "CANCELLED"),
+    rerunAll: !treeActive && finished,
     pause: status === "READY" || status === "RUNNING",
     resume: status === "PAUSED",
     cancel: !finished
@@ -89,6 +122,10 @@ function App() {
   const [goal, setGoal] = useState("");
   const [token, setToken] = useState(() => localStorage.getItem("maestro-token") ?? "");
   const [error, setError] = useState("");
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [planning, setPlanning] = useState<{ goal: string; startedAt: number } | null>(null);
+  const [planElapsed, setPlanElapsed] = useState(0);
+  const [planResult, setPlanResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [snapshot, setSnapshot] = useState<{ robotId: string; src: string } | null>(null);
   const [view, setView] = useState<"fleet" | "settings" | "bt">("fleet");
   const [treeSeed, setTreeSeed] = useState<TreeSeed | null>(null);
@@ -149,46 +186,61 @@ function App() {
     }
   }, [request]);
 
-  // Telemetry arrives many times per second; coalesce refreshes so the browser
-  // never queues thousands of requests behind the event stream.
-  const lastEventRefresh = useRef(0);
-  const pendingRefresh = useRef<number | null>(null);
-  const scheduleRefresh = useCallback(() => {
-    if (pendingRefresh.current !== null) return;
-    const elapsed = Date.now() - lastEventRefresh.current;
-    const delay = Math.max(0, EVENT_REFRESH_INTERVAL_MS - elapsed);
-    pendingRefresh.current = window.setTimeout(() => {
-      pendingRefresh.current = null;
-      lastEventRefresh.current = Date.now();
-      void refresh();
-    }, delay);
-  }, [refresh]);
-
-  useEffect(() => () => {
-    if (pendingRefresh.current !== null) window.clearTimeout(pendingRefresh.current);
+  // Stream events are buffered and flushed together with the 10s poll.
+  const pendingEvents = useRef<FleetEvent[]>([]);
+  const flushEvents = useCallback(() => {
+    if (pendingEvents.current.length === 0) return;
+    const incoming = pendingEvents.current;
+    pendingEvents.current = [];
+    setEvents((current) => {
+      const seen = new Set<string>();
+      return [...incoming.reverse(), ...current].filter((item) => !seen.has(item.event_id) && seen.add(item.event_id)).slice(0, 100);
+    });
   }, []);
 
-  useEffect(() => { void refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(() => { void refresh(); flushEvents(); setRefreshTick((value) => value + 1); }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [refresh, flushEvents]);
   useEffect(() => {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const query = token ? `?token=${encodeURIComponent(token)}` : "";
     const socket = new WebSocket(`${scheme}://${location.host}/api/v1/events/stream${query}`);
     socket.onmessage = (message) => {
       const event = JSON.parse(message.data) as FleetEvent;
-      setEvents((current) => [event, ...current.filter((item) => item.event_id !== event.event_id)].slice(0, 100));
-      scheduleRefresh();
+      if (!NOISY_EVENT_TYPES.has(event.event_type)) pendingEvents.current.push(event);
     };
     return () => socket.close();
-  }, [token, scheduleRefresh]);
+  }, [token]);
+
+  useEffect(() => {
+    if (!planning) return;
+    setPlanElapsed(0);
+    const id = setInterval(() => setPlanElapsed(Math.floor((Date.now() - planning.startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [planning]);
 
   async function submitGoal(event: FormEvent) {
     event.preventDefault();
-    if (!goal.trim()) return;
+    if (!goal.trim() || planning) return;
+    const startedAt = Date.now();
+    setPlanning({ goal, startedAt });
+    setPlanResult(null);
     try {
-      await request("/api/v1/goals", { method: "POST", body: JSON.stringify({ goal, auto_start: false }) });
+      const created = await request("/api/v1/goals", { method: "POST", body: JSON.stringify({ goal, auto_start: false }) });
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      const taskCount = Array.isArray(created?.tasks) ? created.tasks.length : 0;
+      setPlanResult({ ok: true, message: `계획 생성 완료 · Task ${taskCount}개 · ${seconds}초` });
       setGoal("");
+      applyMission(created);
       await refresh();
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) {
+      setPlanResult({ ok: false, message: `계획 생성 실패: ${String(cause)}` });
+      setError(String(cause));
+    } finally {
+      setPlanning(null);
+    }
   }
 
   async function runRobotTask(robotId: string) {
@@ -226,11 +278,14 @@ function App() {
       : [mission, ...current]);
   }
 
-  async function missionAction(missionId: string, action: "start" | "pause" | "resume" | "cancel" | "run") {
+  async function missionAction(missionId: string, action: "start" | "pause" | "resume" | "cancel" | "run" | "behavior-tree/run" | "rerun", body?: unknown) {
     try {
-      const result = await request(`/api/v1/missions/${missionId}/${action}`, { method: "POST" });
+      const result = await request(`/api/v1/missions/${missionId}/${action}`, {
+        method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
       applyMission(result);
       await refresh();
+      setRefreshTick((value) => value + 1);
     }
     catch (cause) { setError(String(cause)); }
   }
@@ -301,38 +356,63 @@ function App() {
       </article>)}</div>
     </section>}
 
-    <section className="two-column">
+    <section>
       <div>
-        <div className="section-title"><h2>Mission</h2></div>
+        <div className="section-title"><h2>Mission</h2><span>{REFRESH_INTERVAL_MS / 1000}초마다 갱신</span></div>
         <form className="goal-form" onSubmit={submitGoal}>
           <textarea value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="전체 로봇이 수행할 목표를 입력합니다." />
-          <button type="submit">검증된 계획 생성</button>
+          <button type="submit" disabled={Boolean(planning)} title="LLM이 목표를 Task로 나누고 형식·capability를 검사한 뒤 DRAFT Mission으로 저장합니다. 로봇은 움직이지 않습니다.">{planning ? "생성 중…" : "계획 생성"}</button>
         </form>
-        <div className="mission-list">{missions.map((mission) => <article className="card mission" key={mission.mission_id}>
+        {planning && <div className="plan-progress" role="status">
+          <div className="plan-progress-bar"><span /></div>
+          <p>LLM이 계획을 만들고 있습니다 · {planElapsed}초 경과</p>
+          <small>LLM 호출 → Plan 형식·capability 검사 → DRAFT Mission 저장. 서버가 단계별 진행률을 보내지 않아 경과 시간만 표시합니다.</small>
+        </div>}
+        {!planning && planResult && <div className={`plan-progress ${planResult.ok ? "done" : "failed"}`} role="status">
+          <p>{planResult.message}</p>
+        </div>}
+        <details className="mission-help"><summary>버튼 설명</summary><dl>
+          <dt>BT 실행</dt><dd>{MISSION_BUTTON_HELP.tree}</dd>
+          <dt>실패부터 재실행</dt><dd>{MISSION_BUTTON_HELP.rerunFailed}</dd>
+          <dt>처음부터 재실행</dt><dd>{MISSION_BUTTON_HELP.rerunAll}</dd>
+          <dt>시작</dt><dd>{MISSION_BUTTON_HELP.start}</dd>
+          <dt>1회 실행</dt><dd>{MISSION_BUTTON_HELP.run}</dd>
+          <dt>일시정지</dt><dd>{MISSION_BUTTON_HELP.pause}</dd>
+          <dt>재개</dt><dd>{MISSION_BUTTON_HELP.resume}</dd>
+          <dt>취소</dt><dd>{MISSION_BUTTON_HELP.cancel}</dd>
+        </dl></details>
+        <div className="mission-list">{sortMissionsNewestFirst(missions).map((mission) => <article className="card mission" key={mission.mission_id}>
           <div className="card-title"><h3>{mission.goal}</h3><span className="state">{mission.status}</span></div>
-          <small>{mission.mission_id} · plan v{mission.plan_version}</small>
+          <small>{formatCreatedAt(mission.created_at)}{mission.created_at ? " · " : ""}{mission.mission_id} · plan v{mission.plan_version}</small>
           <div className="card-actions">{(() => {
-            const allowed = missionActions(mission.status);
+            const treeActive = Boolean(mission.behavior_tree_run?.active);
+            const allowed = missionActions(mission.status, treeActive);
             const paused = mission.status === "PAUSED";
             return <>
-              <button disabled={!allowed.start} onClick={() => void missionAction(mission.mission_id, "start")}>시작</button>
-              <button disabled={!allowed.run} onClick={() => void missionAction(mission.mission_id, "run")}>1회 실행</button>
-              <button disabled={paused ? !allowed.resume : !allowed.pause} onClick={() => void missionAction(mission.mission_id, paused ? "resume" : "pause")}>{paused ? "재개" : "일시정지"}</button>
-              <button className="danger ghost" disabled={!allowed.cancel} onClick={() => void missionAction(mission.mission_id, "cancel")}>취소</button>
+              <button title={MISSION_BUTTON_HELP.tree} disabled={!allowed.tree} onClick={() => void missionAction(mission.mission_id, "behavior-tree/run")}>{treeActive ? "BT 실행 중…" : "BT 실행"}</button>
+              {allowed.rerunAll && <>
+                <button title={MISSION_BUTTON_HELP.rerunFailed} disabled={!allowed.rerunFailed} onClick={() => void missionAction(mission.mission_id, "rerun", { failed_only: true })}>실패부터 재실행</button>
+                <button title={MISSION_BUTTON_HELP.rerunAll} onClick={() => { if (window.confirm("모든 Task를 처음부터 다시 실행할까요? 성공한 Task도 로봇이 다시 수행합니다.")) void missionAction(mission.mission_id, "rerun", { failed_only: false }); }}>처음부터 재실행</button>
+              </>}
+              <button title={MISSION_BUTTON_HELP.start} disabled={!allowed.start} onClick={() => void missionAction(mission.mission_id, "start")}>시작</button>
+              <button title={MISSION_BUTTON_HELP.run} disabled={!allowed.run} onClick={() => void missionAction(mission.mission_id, "run")}>1회 실행</button>
+              <button title={paused ? MISSION_BUTTON_HELP.resume : MISSION_BUTTON_HELP.pause} disabled={paused ? !allowed.resume : !allowed.pause} onClick={() => void missionAction(mission.mission_id, paused ? "resume" : "pause")}>{paused ? "재개" : "일시정지"}</button>
+              <button title={MISSION_BUTTON_HELP.cancel} className="danger ghost" disabled={!allowed.cancel} onClick={() => void missionAction(mission.mission_id, "cancel")}>취소</button>
             </>;
           })()}</div>
+          <MissionTree missionId={mission.mission_id} request={request} active={Boolean(mission.behavior_tree_run?.active)} refreshKey={refreshTick} />
           <div className="dag">{mission.tasks.map((task) => <div className="task" key={task.task_id}>
-            <strong>{task.task_id}</strong><span>{task.status}</span><p>{task.instruction}</p><small>robot: {task.assigned_robot_id ?? "미배정"} · deps: {task.depends_on.join(", ") || "없음"}</small>
+            <strong>{task.task_id}</strong><span>{task.status}</span><p>{task.instruction}</p><small>{task.skill_name ? `skill: ${task.skill_name} · ` : ""}{task.params?.preferred_robot_id ? `지정: ${String(task.params.preferred_robot_id)} · ` : ""}robot: {task.assigned_robot_id ?? "미배정"} · deps: {task.depends_on.join(", ") || "없음"}</small>
           </div>)}</div>
         </article>)}</div>
       </div>
-      <div>
-        <div className="section-title"><h2>Event Timeline</h2><span>최근 {events.length}</span></div>
+      <details className="event-timeline">
+        <summary>Event Timeline · 최근 {events.length} (telemetry 제외, {REFRESH_INTERVAL_MS / 1000}초마다 갱신)</summary>
         <div className="timeline">{events.map((event) => <article key={event.event_id}>
           <time>{new Date(event.occurred_at).toLocaleTimeString()}</time>
           <div><strong>{event.event_type}</strong><p>{event.aggregate_id}</p></div>
         </article>)}</div>
-      </div>
+      </details>
     </section>
     </div>
   </main>;

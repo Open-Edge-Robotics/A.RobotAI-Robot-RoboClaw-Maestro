@@ -143,6 +143,11 @@ class RosGrpcRobotGateway:
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
         try:
             response = await self._stub.ExecuteSkill(

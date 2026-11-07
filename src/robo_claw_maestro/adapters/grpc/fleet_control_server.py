@@ -371,6 +371,11 @@ class FleetControlHub(pb2_grpc.FleetControlServicer):
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
         command_id = uuid4().hex
         return await self._command(
@@ -379,10 +384,11 @@ class FleetControlHub(pb2_grpc.FleetControlServicer):
                 protocol_version=PROTOCOL_VERSION,
                 command_id=command_id,
                 execute_skill=pb2.ExecuteSkillCommand(
-                    task_id=f"skill:{skill_name}",
-                    attempt_id=command_id,
-                    correlation_id=command_id,
-                    idempotency_key=command_id,
+                    mission_id=mission_id,
+                    task_id=task_id or f"skill:{skill_name}",
+                    attempt_id=attempt_id or command_id,
+                    correlation_id=correlation_id or mission_id or command_id,
+                    idempotency_key=idempotency_key or command_id,
                     skill_name=skill_name,
                     params_json=json.dumps(params),
                     deadline_ms=int((datetime.now(UTC).timestamp() + timeout_sec) * 1000),
@@ -475,12 +481,22 @@ class FleetPreferredGateway:
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
         return await self._gateway(robot_id).execute_skill(
             robot_id,
             skill_name=skill_name,
             params=params,
             timeout_sec=timeout_sec,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+            mission_id=mission_id,
+            attempt_id=attempt_id,
+            correlation_id=correlation_id,
         )
 
     async def request_snapshot(self, robot_id: str) -> RobotSnapshot:

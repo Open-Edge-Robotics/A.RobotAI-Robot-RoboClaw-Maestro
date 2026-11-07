@@ -91,6 +91,11 @@ class RobotGateway(Protocol):
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult: ...
 
     async def request_snapshot(self, robot_id: str) -> RobotSnapshot: ...
@@ -104,6 +109,7 @@ class FakeRobotGateway:
     def __init__(self, robots: list[RobotStatusSnapshot] | None = None) -> None:
         self._statuses = {item.robot_id: item for item in robots or []}
         self.executed_tasks: list[dict[str, Any]] = []
+        self.executed_skills: list[dict[str, Any]] = []
         self.emergency_stops: list[str] = []
         self.fail_commands_for: set[str] = set()
         self.unavailable: set[str] = set()
@@ -172,12 +178,31 @@ class FakeRobotGateway:
         skill_name: str,
         params: dict[str, Any],
         timeout_sec: float,
+        task_id: str = "",
+        idempotency_key: str = "",
+        mission_id: str = "",
+        attempt_id: str = "",
+        correlation_id: str = "",
     ) -> RemoteTaskResult:
+        self.executed_skills.append(
+            {
+                "robot_id": robot_id,
+                "skill_name": skill_name,
+                "params": dict(params),
+                "task_id": task_id,
+                "idempotency_key": idempotency_key,
+                "mission_id": mission_id,
+            }
+        )
         return await self.execute_task(
             robot_id,
             instruction=f"skill:{skill_name}:{params}",
-            task_id=f"skill:{skill_name}",
+            task_id=task_id or f"skill:{skill_name}",
             timeout_sec=timeout_sec,
+            idempotency_key=idempotency_key,
+            mission_id=mission_id,
+            attempt_id=attempt_id,
+            correlation_id=correlation_id,
         )
 
     async def request_snapshot(self, robot_id: str) -> RobotSnapshot:
