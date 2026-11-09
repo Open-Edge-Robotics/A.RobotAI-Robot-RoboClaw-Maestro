@@ -1,0 +1,18 @@
+digraph DAG {
+  graph [rankdir=LR, bgcolor="white", pad=0.35, nodesep=0.55, ranksep=0.8, fontname="Noto Sans CJK KR", fontsize=18, label="Task 의존성 DAG와 병렬 실행 예", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=12, margin="0.18,0.14"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  a [label="Task A\n거실로 이동\nRobot 1"];
+  b [label="Task B\n거실 상태 관찰\nA 성공 후 실행"];
+  c [label="Task C\n거실 정리\nB 성공 후 실행"];
+  d [label="Task D\n주방 상태 확인\nRobot 2", fillcolor="#ecfdf5", color="#059669"];
+  e [label="Task E\n주방 결과 후속 작업\nD 성공 후 실행", fillcolor="#ecfdf5", color="#059669"];
+  a -> b [label="depends_on: A"];
+  b -> c [label="depends_on: B"];
+  d -> e [label="depends_on: D"];
+  {rank=same; a; d;}
+  {rank=same; b; e;}
+  note [label="A와 D는 서로 의존하지 않아 병렬 실행 가능\n거실 체인 A → B → C와 주방 체인 D → E는 독립\n기본 DAG round는 선행 Task가 모두 성공해야 후속 Task를 준비한다.", shape=note, fillcolor="#fffbeb", color="#d97706", fontsize=10];
+  c -> note [style=invis];
+  e -> note [style=invis];
+}

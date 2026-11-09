@@ -1,0 +1,24 @@
+digraph Connections {
+  graph [rankdir=TB, newrank=true, bgcolor="white", pad=0.35, nodesep=0.55, ranksep=0.7, fontname="Noto Sans CJK KR", fontsize=18, label="RosGrpc와 FleetControl 연결 방향", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=12, margin="0.2,0.14"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  subgraph cluster_ros {
+    label="A. 정적 RosGrpc"; color="#93c5fd"; style=rounded; fontname="Noto Sans CJK KR";
+    ros_m [label="Maestro\nMultiRobotGateway"];
+    ros_r [label="Robo-Claw\nRosGrpc 서버 :50051", fillcolor="#ecfdf5", color="#059669"];
+    ros_m -> ros_r [label="① Maestro가 연결 시작\n정적 endpoint 설정", color="#2563eb", penwidth=2];
+    ros_r -> ros_m [label="② 상태 / 응답", style=dashed, constraint=false];
+  }
+  subgraph cluster_fleet {
+    label="B. outbound FleetControl (권장)"; color="#6ee7b7"; style=rounded; fontname="Noto Sans CJK KR";
+    fleet_m [label="Maestro\nFleetControl 서버 :50053"];
+    fleet_r [label="Robo-Claw\noutbound connector", fillcolor="#ecfdf5", color="#059669"];
+    fleet_r -> fleet_m [label="① Robot이 연결 시작\nRegister / session ID", color="#059669", penwidth=2];
+    fleet_m -> fleet_r [label="② 같은 양방향 stream\n명령 ↔ Telemetry / 결과", dir=both, style=dashed, constraint=false];
+  }
+  {rank=same; ros_m; fleet_m;}
+  {rank=same; ros_r; fleet_r;}
+  note [label="화살표 ① = 연결 시작 방향, ② = 연결 후 데이터 교환\nFleetControl은 TLS/mTLS 구성 가능 · RosGrpc는 신뢰 LAN 전제\nFleetPreferredGateway: 활성 Fleet 세션 우선, 없으면 RosGrpc fallback", shape=note, fillcolor="#fffbeb", color="#d97706", fontsize=10];
+  ros_r -> note [style=invis];
+  fleet_r -> note [style=invis];
+}

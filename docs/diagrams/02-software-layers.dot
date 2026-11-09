@@ -1,0 +1,23 @@
+digraph Layers {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.5, ranksep=0.65, fontname="Noto Sans CJK KR", fontsize=18, label="소프트웨어 계층과 역할 경계", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=12, margin="0.2,0.14"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  root [label="main.py — Composition Root\n설정 읽기 · 서비스 / Adapter 조립", fillcolor="#f1f5f9", color="#64748b"];
+  entry [label="API / Agent\nHTTP·WS 요청 / LLM 계획 검증"];
+  app [label="Application\nRegistry · Scheduler · Orchestrator\nDispatcher · BT Runner · Approval", fillcolor="#ecfdf5", color="#059669"];
+  domain [label="Domain\nMission / Task / Robot / Command\n상태 전이 · DAG 규칙 · 안전 정책", fillcolor="#f5f3ff", color="#7c3aed"];
+  ports [label="Ports\nRepository / RobotGateway 인터페이스"];
+  adapters [label="Adapters\nSQLModel · RosGrpc · FleetControl\nLLM HTTP Provider", fillcolor="#fffbeb", color="#d97706"];
+  external [label="외부 시스템\nDB / Robo-Claw / LLM", fillcolor="#f1f5f9", color="#64748b"];
+  root -> entry [label="조립", style=dashed];
+  root -> adapters [label="선택 / 연결", style=dashed];
+  entry -> app [label="유스케이스 호출"];
+  app -> domain [label="상태 / 규칙 사용"];
+  app -> ports [label="외부 접근 계약"];
+  adapters -> ports [label="계약 구현", style=dashed];
+  adapters -> external [label="I/O", dir=both];
+  {rank=same; domain; ports;}
+  note [label="실선: 호출 / 사용 관계   점선: 조립 / 계약 구현\n역할 중심 개념도이며 모든 import 의존성을 나타내지 않는다.\nDomain은 HTTP·DB·ROS 구현에 직접 의존하지 않는다.", shape=note, fillcolor="#f8fafc", color="#94a3b8", fontsize=10];
+  domain -> note [style=invis];
+  external -> note [style=invis];
+}

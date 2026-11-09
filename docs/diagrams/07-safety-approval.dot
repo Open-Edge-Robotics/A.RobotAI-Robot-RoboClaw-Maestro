@@ -1,0 +1,33 @@
+digraph Safety {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.5, ranksep=0.55, fontname="Noto Sans CJK KR", fontsize=18, label="BT Action의 안전 검사와 승인 흐름", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=11, margin="0.18,0.12"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  action [label="다음 BT Action / Task"];
+  candidate [label="실행 로봇 후보\nONLINE · Capability · map / frame\n배터리 · 센서 · pose 정책 검사"];
+  safe [label="안전한 후보 존재?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  need [label="dangerous 또는\nrequires_approval?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  wait [label="Approval 저장\nWAITING_APPROVAL\n기본 만료 15분", fillcolor="#f5f3ff", color="#7c3aed"];
+  admin [label="admin token\n승인 / 거부", fillcolor="#f5f3ff", color="#7c3aed"];
+  approved [label="승인됨?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  recheck [label="승인 후 로봇 상태 재확인\n승인 대상 로봇과 일치 필요"];
+  dispatch [label="로봇별 lock / checkpoint\nDispatcher allowlist · 승인 검사"];
+  sent [label="허용된 명령 전송\n최종 결과 확인", fillcolor="#ecfdf5", color="#059669"];
+  fail [label="실행 거부 / Action 실패\n로봇 명령 없음", fillcolor="#fef2f2", color="#dc2626"];
+  action -> candidate;
+  candidate -> safe;
+  safe -> fail [label="아니오"];
+  safe -> need [label="예"];
+  need -> wait [label="예"];
+  need -> dispatch [label="아니오"];
+  wait -> approved;
+  admin -> approved [label="결정", style=dashed];
+  approved -> fail [label="거부 / 만료"];
+  approved -> recheck [label="승인"];
+  recheck -> dispatch [label="유효"];
+  recheck -> fail [label="상태 / 대상 변경"];
+  dispatch -> sent [label="허용"];
+  dispatch -> fail [label="allowlist 등 거부"];
+  note [label="BT 경로의 개념 흐름: 위험 스킬 재시도에는 새 승인 필요\n직접 위험 Skill은 202 승인 요청, DAG 1회 실행은 대기 없이 실패\n원격 실행 중 pause / cancel ≠ 물리 정지, 긴급 정지는 별도 경로", shape=note, fillcolor="#f8fafc", color="#94a3b8", fontsize=10];
+  sent -> note [style=invis];
+  fail -> note [style=invis];
+}

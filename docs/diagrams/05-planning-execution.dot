@@ -1,0 +1,32 @@
+digraph Planning {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.45, ranksep=0.6, fontname="Noto Sans CJK KR", fontsize=18, label="계획 생성과 결정적 실행의 경계", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=12, margin="0.18,0.12"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  goal [label="사용자 자연어 목표"];
+  catalog [label="Registry Fleet catalog\n+ Planning 문서", shape=folder, fillcolor="#fffbeb", color="#d97706"];
+  llm [label="LLM Provider\nJSON Plan 제안", fillcolor="#f5f3ff", color="#7c3aed"];
+  validate [label="MissionPlanParser\nTask · Capability · 의존성\ntimeout / retry budget 검증"];
+  valid [label="유효한 계획?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  reject [label="계획 거부\n로봇 명령 없음", fillcolor="#fef2f2", color="#dc2626"];
+  dry [label="Dry-run 결과\nstage · 후보 · 경고\n저장 / 명령 없음"];
+  mission [label="Mission 저장\ngoal 계획은 변환된 BT 포함", fillcolor="#ecfdf5", color="#059669"];
+  direct [label="직접 JSON Mission\nLLM 미사용 / Domain 검증", fillcolor="#f1f5f9", color="#64748b"];
+  execute [label="명시적 실행 요청\nDAG 1 round 또는 BT 실행", fillcolor="#ecfdf5", color="#059669"];
+  policy [label="실행 시점 safety policy\n필요 승인 · 로봇 배정"];
+  dispatch [label="TaskDispatcher → RobotGateway\nExecuteSkill / ExecuteTask"];
+  result [label="원격 최종 결과\nTask / Mission / Event 반영"];
+  goal -> llm;
+  catalog -> llm [style=dashed, label="prompt 참고"];
+  llm -> validate [label="제안 (실행 권한 아님)"];
+  validate -> valid;
+  valid -> reject [label="아니오"];
+  valid -> dry [label="예 / Dry-run 요청"];
+  valid -> mission [label="예 / goal 요청"];
+  direct -> mission [label="별도 입력 경로"];
+  mission -> execute [label="먼저 계획 검토"];
+  execute -> policy;
+  policy -> dispatch [label="통과 / 필요한 승인 완료"];
+  dispatch -> result;
+  note [label="LLM은 계획 제안자이며 안전 정책을 우회할 수 없다.\n기본 skill 모드는 지정 스킬 실행, instruction 모드는 로봇 측 재해석 가능.\n직접 JSON Mission은 LLM Parser와 입력 제한이 완전히 같지 않다.", shape=note, fillcolor="#f8fafc", color="#94a3b8", fontsize=10];
+  result -> note [style=invis];
+}

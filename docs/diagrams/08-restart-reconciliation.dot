@@ -1,0 +1,32 @@
+digraph Recovery {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.5, ranksep=0.6, fontname="Noto Sans CJK KR", fontsize=18, label="재시작 복구와 UNKNOWN 정합성 확인", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=11, margin="0.18,0.12"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  restart [label="Maestro 재시작"];
+  db [label="DB Aggregate snapshot 읽기\nMission · Task · Robot · Approval", shape=cylinder, fillcolor="#fffbeb", color="#d97706"];
+  filter [label="저장된 UNKNOWN Task\n+ assigned_robot_id 대상"];
+  status [label="Robot 상태 동기화"];
+  offline [label="Robot OFFLINE?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  unresolved [label="unresolved 유지\nUNKNOWN", fillcolor="#fffbeb", color="#d97706"];
+  same [label="같은 Task ID 보고?", shape=diamond, fillcolor="#fffbeb", color="#d97706"];
+  running [label="Task → RUNNING\n현재 실행 보고와 정합", fillcolor="#ecfdf5", color="#059669"];
+  failed [label="Task → FAILED\nRECONCILIATION_INCONCLUSIVE", fillcolor="#fef2f2", color="#dc2626"];
+  persist [label="Mission 상태 재평가\nEvent / snapshot 저장"];
+  manual [label="현장 동작 / Robot journal 확인\n운영자가 후속 조치 결정"];
+  lost [label="BT runner / 노드 상태 / cycle\n메모리 상태는 복원되지 않음\n자동 이어달리기 없음", shape=note, fillcolor="#fef2f2", color="#dc2626"];
+  restart -> db;
+  restart -> lost [style=dashed, label="제약"];
+  db -> filter;
+  filter -> status;
+  status -> offline;
+  offline -> unresolved [label="예"];
+  offline -> same [label="아니오"];
+  same -> running [label="예"];
+  same -> failed [label="아니오"];
+  unresolved -> persist;
+  running -> persist;
+  failed -> persist;
+  persist -> manual;
+  note [label="FAILED 판정은 물리 동작 미발생의 증명이 아니다.\n모든 RUNNING Task가 자동 UNKNOWN 전환되는 것은 아니다.\nUNKNOWN 명령은 무조건 재전송하지 않는다.", shape=note, fillcolor="#f8fafc", color="#94a3b8", fontsize=10];
+  manual -> note [style=invis];
+}

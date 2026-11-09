@@ -1,0 +1,36 @@
+digraph Architecture {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.45, ranksep=0.65, fontname="Noto Sans CJK KR", fontsize=18, label="Maestro 전체 시스템 아키텍처", labelloc=t];
+  node [shape=box, style="rounded,filled", fillcolor="#eff6ff", color="#2563eb", fontname="Noto Sans CJK KR", fontsize=12, margin="0.18,0.12"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10, arrowsize=0.8];
+  user [label="사용자 / 외부 클라이언트", fillcolor="#f1f5f9", color="#64748b"];
+  console [label="Web Console\nReact · REST / WebSocket proxy"];
+  subgraph cluster_maestro {
+    label="Maestro 서버"; color="#93c5fd"; style=rounded; fontname="Noto Sans CJK KR";
+    api [label="FastAPI\nREST API / WebSocket"];
+    planning [label="MaestroAgent\n계획 생성 · 검증 · BT 변환", fillcolor="#f5f3ff", color="#7c3aed"];
+    execution [label="Mission 실행\nOrchestrator / Scheduler\nBT Runner / Approval / Dispatcher", fillcolor="#ecfdf5", color="#059669"];
+    registry [label="RobotRegistry / Monitor\n등록 · Telemetry · 연결 감시"];
+    repo [label="Repository\nAggregate · Command · Event"];
+    gateway [label="RobotGateway\nFleetControl 우선 / RosGrpc fallback"];
+  }
+  llm [label="LLM Provider (선택)\nOllama / OpenAI / Azure / Anthropic", fillcolor="#f5f3ff", color="#7c3aed"];
+  knowledge [label="Knowledge 파일\nPlanning Markdown / BT JSON", shape=folder, fillcolor="#fffbeb", color="#d97706"];
+  db [label="SQLite / PostgreSQL\nMission·Task / Robot / Approval\nCommand / Event / Lease", shape=cylinder, fillcolor="#fffbeb", color="#d97706"];
+  robot [label="Robo-Claw 로봇 Fleet\nSkill 실행 · 상태 / 결과 보고", fillcolor="#ecfdf5", color="#059669"];
+  user -> console;
+  user -> api [label="직접 API 호출", style=dashed];
+  console -> api [label="REST / WS", dir=both];
+  api -> planning [label="목표 / Dry-run"];
+  api -> execution [label="실행 / 제어"];
+  api -> registry [label="조회 / 제어"];
+  planning -> llm [label="prompt / plan", dir=both];
+  knowledge -> planning [label="참고 문서", style=dashed];
+  registry -> planning [label="Fleet catalog", style=dashed];
+  planning -> execution [label="검증된 Mission / BT" ];
+  execution -> repo [label="상태 / 이벤트"];
+  registry -> repo [label="snapshot / 이벤트"];
+  repo -> db [dir=both];
+  execution -> gateway [label="개별 Task / Skill"];
+  registry -> gateway [label="상태 감시", dir=both];
+  gateway -> robot [label="명령 / Telemetry / 결과", dir=both];
+}

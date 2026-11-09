@@ -1,0 +1,29 @@
+digraph BT {
+  graph [rankdir=TB, bgcolor="white", pad=0.35, nodesep=0.35, ranksep=0.6, fontname="Noto Sans CJK KR", fontsize=18, label="Mission Behavior Tree 구성 예", labelloc=t];
+  node [shape=box, style="rounded,filled", color="#2563eb", fillcolor="#eff6ff", fontname="Noto Sans CJK KR", fontsize=11, margin="0.16,0.12"];
+  edge [color="#64748b", fontname="Noto Sans CJK KR", fontsize=10];
+  root [label="Parallel\n독립 체인 조율\nsuccess_count = 2", fillcolor="#f5f3ff", color="#7c3aed"];
+  seq_a [label="Sequence\n거실 체인", fillcolor="#f5f3ff", color="#7c3aed"];
+  seq_b [label="Sequence\n주방 체인", fillcolor="#f5f3ff", color="#7c3aed"];
+  move [label="Action: 이동\nRobot 1 / navigate_to"];
+  fallback [label="Fallback\n실패 후 계속 진행", fillcolor="#fffbeb", color="#d97706"];
+  tidy [label="Action: 정리\nRobot 1 / tidy_home"];
+  observe [label="Action: 관찰\nRobot 1 / 관찰 스킬"];
+  always [label="AlwaysSuccess\ncontinue 정책", fillcolor="#fffbeb", color="#d97706"];
+  status [label="Action: 상태 조회\nRobot 2 / get_status", fillcolor="#ecfdf5", color="#059669"];
+  follow [label="Action: 후속 작업\nRobot 2 / 지원 스킬", fillcolor="#ecfdf5", color="#059669"];
+  root -> seq_a;
+  root -> seq_b;
+  seq_a -> move [label="1"];
+  seq_a -> fallback [label="2"];
+  seq_a -> tidy [label="3"];
+  fallback -> observe [label="먼저 시도"];
+  fallback -> always [label="관찰 실패 시"];
+  seq_b -> status [label="1"];
+  seq_b -> follow [label="2"];
+  {rank=same; move; fallback; tidy; status; follow;}
+  note [label="트리 전체는 Maestro가 실행 · 로봇에는 Action 단위 명령만 전달\n같은 로봇의 Action은 runner 내부 lock으로 직렬화\ncontinue는 흐름만 이어가며 Task 실패 기록은 유지 → 부분 성공 가능\n독립 체인은 한 체인의 실패 때문에 자동 취소되지 않음", shape=note, fillcolor="#f8fafc", color="#94a3b8", fontsize=10];
+  observe -> note [style=invis];
+  always -> note [style=invis];
+  follow -> note [style=invis];
+}
